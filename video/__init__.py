@@ -1,0 +1,66 @@
+"""Video metadata, frame extraction, and rally export services."""
+
+from .errors import (
+    ExportCancelledError,
+    ExportError,
+    FFmpegNotFoundError,
+    FFprobeNotFoundError,
+    FrameExtractionCancelledError,
+    FrameExtractionError,
+    MetadataError,
+    VideoFileError,
+    VideoIOError,
+)
+from .exporter import (
+    ExportResult,
+    ExportSegment,
+    FFmpegExporter,
+    VideoExporter,
+    build_ffmpeg_command,
+    build_filter_complex,
+    check_ffmpeg_available,
+    export_rallies,
+    generate_export_segments,
+    is_ffmpeg_available,
+    require_ffmpeg,
+)
+from .metadata import (
+    VideoMetadata,
+    extract_video_metadata,
+    get_video_metadata,
+    is_ffprobe_available,
+    probe_video_metadata,
+)
+from .video_reader import FrameSample, VideoReader, extract_frame, extract_thumbnail
+
+__all__ = [
+    "ExportCancelledError",
+    "ExportError",
+    "ExportResult",
+    "ExportSegment",
+    "FFmpegExporter",
+    "FFmpegNotFoundError",
+    "FFprobeNotFoundError",
+    "FrameExtractionCancelledError",
+    "FrameExtractionError",
+    "FrameSample",
+    "MetadataError",
+    "VideoFileError",
+    "VideoIOError",
+    "VideoMetadata",
+    "VideoExporter",
+    "VideoReader",
+    "build_ffmpeg_command",
+    "build_filter_complex",
+    "check_ffmpeg_available",
+    "export_rallies",
+    "extract_video_metadata",
+    "extract_frame",
+    "extract_thumbnail",
+    "generate_export_segments",
+    "get_video_metadata",
+    "is_ffmpeg_available",
+    "is_ffprobe_available",
+    "probe_video_metadata",
+    "require_ffmpeg",
+]
