@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
+import warnings
 
 import numpy as np
 import pytest
@@ -30,6 +31,10 @@ def window(tmp_path, monkeypatch, native_app):
     editor.detection_settings = deepcopy(DEFAULT_SETTINGS)
     editor._recovery_dir = tmp_path / "recovery"
     editor.show()
+    editor.activateWindow()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        app.setActiveWindow(editor)
     app.processEvents()
     source = Path("/private/tmp/roundnet_two_rallies.mp4")
     if not source.is_file():
@@ -103,6 +108,7 @@ def test_native_review_recovery_and_annotation_workflow(window, tmp_path):
     assert not editor._project_dirty and not editor._history.undo_stack
     editor._select_rally(0, seek=False)
     editor.findChild(QTabWidget).setCurrentIndex(1)
+    assert editor.rally_tree.height() >= 140
     editor.note_edit.setFocus()
     app.processEvents()
     assert not any(s.isEnabled() for s in editor._shortcuts)
@@ -253,3 +259,172 @@ def test_native_background_export_with_presentation(window, tmp_path):
     width, height = metadata.display_resolution
     assert width / height == pytest.approx(9/16)
     assert metadata.duration == pytest.approx(4, abs=.15)
+
+
+def _logged_point(start=1, server="A1", receiver="B1"):
+    from models import Rally
+    from models.point_stats import new_event
+    partner = lambda pid: pid[0] + ("2" if pid[1] == "1" else "1")
+    events = [new_event(server, "serve", "in"), new_event(receiver, "receive", "strong"),
+              new_event(partner(receiver), "set", "strong"), new_event(receiver, "hit", "auto"),
+              new_event(partner(server), "defense", "auto"), new_event(server, "set", "strong"),
+              new_event(partner(server), "hit", "auto")]
+    return Rally(start, start+2, winner=server[0], point_stats={"version": 1, "complete": True,
+        "server_id": server, "receiver_id": receiver, "events": events})
+
+
+def test_native_touch_editor_saves_ordered_events_and_undo(window, tmp_path, monkeypatch):
+    from models import Rally
+    from models.statistics import calculate_statistics
+    from ui.point_statistics import PointStatisticsDialog
+
+    editor, app = window
+    editor.rallies = [Rally(1, 10)]
+    editor._rebuild_rally_tree(0, seek=False)
+    editor._update_ui_state()
+    expected = _logged_point().point_stats
+
+    def edit(dialog):
+        dialog.show()
+        from PySide6.QtTest import QTest
+        dialog.video.play()
+        for _ in range(100):
+            app.processEvents()
+            if dialog.video.video_widget.videoSink().videoFrame().isValid():
+                break
+            QTest.qWait(20)
+        dialog.video.pause()
+        assert dialog.video.video_widget.videoSink().videoFrame().isValid()
+        dialog.server.setCurrentIndex(dialog.server.findData("A2"))
+        assert dialog.actor.currentData() == "A2"
+        dialog.server.setCurrentIndex(dialog.server.findData("A1"))
+        dialog.receiver.setCurrentIndex(dialog.receiver.findData("B1"))
+        for event in expected["events"]:
+            dialog.kind.setCurrentIndex(dialog.kind.findData(event["kind"]))
+            dialog.actor.setCurrentIndex(dialog.actor.findData(event["player_id"]))
+            dialog.result_combo.setCurrentIndex(dialog.result_combo.findData(event["result"]))
+            dialog.add_event()
+        assert dialog.table.currentRow() == -1
+        assert len(dialog.events) == 7
+        dialog.table.selectRow(5)
+        identity = dialog.events[5]["event_id"]
+        dialog.result_combo.setCurrentIndex(dialog.result_combo.findData("weak"))
+        dialog.update_event()
+        assert dialog.events[5]["event_id"] == identity
+        assert dialog.events[5]["result"] == "weak"
+        dialog.result_combo.setCurrentIndex(dialog.result_combo.findData("strong"))
+        dialog.update_event()
+        dialog.table.selectRow(4)
+        dialog.move_event(-1)
+        assert "Needs correction" in dialog.status.text()
+        dialog.move_event(1)
+        dialog.table.selectRow(6)
+        dialog.remove_event()
+        assert len(dialog.events) == 6
+        dialog.kind.setCurrentIndex(dialog.kind.findData("hit"))
+        dialog.actor.setCurrentIndex(dialog.actor.findData("A2"))
+        dialog.result_combo.setCurrentIndex(dialog.result_combo.findData("auto"))
+        dialog.add_event()
+        dialog.winner_combo.setCurrentIndex(dialog.winner_combo.findData("A"))
+        dialog.complete.setChecked(True)
+        assert dialog.status.text().startswith("Complete point")
+        assert "Get" in dialog.status.text() and "Put-away" in dialog.status.text()
+        app.processEvents()
+        assert dialog.grab().save(str(tmp_path / "touch-editor.png"))
+        dialog._save()
+        assert dialog.video.loaded_path is None
+        return dialog.result()
+
+    # Preserve the real save/accept path without starting a nested modal loop.
+    monkeypatch.setattr(PointStatisticsDialog, "exec", edit)
+    editor.edit_point_statistics()
+    assert editor.rallies[0].point_stats["complete"]
+    assert editor.rallies[0].winner == "A"
+    report = calculate_statistics(editor.rallies)
+    assert report["coverage"]["complete"] == 1
+    assert report["players"][1]["defensive_gets"] == 1
+    editor.undo_edit()
+    assert editor.rallies[0].point_stats == {}
+    editor.redo_edit()
+    assert editor.rallies[0].point_stats["complete"]
+
+
+def test_native_statistics_tabs_exports_confirmation_and_point_navigation(window, tmp_path, monkeypatch):
+    from models.point_stats import normalize_roster
+    from PySide6.QtGui import QImage
+    from PySide6.QtWidgets import QFileDialog, QDialog
+    from ui.statistics_dialog import StatisticsDialog
+
+    editor, app = window
+    editor.rallies = [_logged_point(1, "A1", "B1"), _logged_point(4, "A2", "B2"),
+                      _logged_point(7, "B1", "A1"), _logged_point(10, "B2", "A2")]
+    roster = normalize_roster()
+    for p, name in zip(roster, ("Christian", "Alex", "Morgan", "Jordan")):
+        p["name"] = name
+    editor.match_settings["players"] = roster
+    editor._rebuild_rally_tree(0, seek=False)
+    editor._update_summary()
+
+    def review(dialog):
+        dialog.show()
+        assert dialog.tabs.count() == 8
+        assert dialog.report["coverage"]["complete"] == 4
+        assert dialog.report["players"][0]["rpr"]["overall"] is None
+        dialog.complete.setChecked(True)
+        assert all(p["rpr"]["overall"] is not None for p in dialog.report["players"])
+        app.processEvents()
+        assert dialog.grab().save(str(tmp_path / "statistics-dialog.png"))
+        for ext in (".png", ".csv", ".json"):
+            destination = tmp_path / f"match-statistics{ext}"
+            monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_, p=destination: (str(p), ""))
+            dialog._export(ext)
+            assert destination.is_file()
+        card = QImage(str(tmp_path / "match-statistics.png"))
+        assert card.width() == 1800 and card.height() == 850
+        exported = json.loads((tmp_path / "match-statistics.json").read_text())
+        assert exported["players"][0]["name"] == "Christian"
+        assert exported["points"][0]["events"][-1]["result"] == "put_away"
+        dialog._open_point(2, 0)
+        return QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(StatisticsDialog, "exec", review)
+    editor.show_match_statistics()
+    assert editor.selected_rally_index == 2
+    assert editor.match_settings["stats_complete"] is True
+    editor.undo_edit()
+    assert not editor.match_settings.get("stats_complete", False)
+    editor.redo_edit()
+    assert editor.match_settings["stats_complete"] is True
+    editor.toggle_star()
+    assert editor.match_settings["stats_complete"] is False
+
+
+def test_native_touch_logs_survive_save_rejection_split_and_merge_undo(window, tmp_path):
+    from models.project import read_project, write_project
+    from models.statistics import calculate_statistics
+
+    editor, app = window
+    original = _logged_point()
+    editor.rallies = [original, _logged_point(4)]
+    editor._rebuild_rally_tree(0, seek=False)
+    editor._update_summary()
+    saved = write_project(tmp_path / "annotated.roundnet.json", editor._project_snapshot())
+    editor._apply_project(read_project(saved))
+    assert editor.rallies[0].point_stats == original.point_stats
+    editor._select_rally(0, seek=False)
+    editor.delete_selected_rally()
+    assert calculate_statistics(editor.rallies)["coverage"]["complete"] == 1
+    editor.restore_rally()
+    assert calculate_statistics(editor.rallies)["coverage"]["complete"] == 2
+    editor.player.set_position(2)
+    app.processEvents()
+    editor.split_selected_rally()
+    assert len(editor.rallies) == 3
+    assert editor.rallies[0].point_stats == editor.rallies[1].point_stats == {}
+    editor.undo_edit()
+    assert len(editor.rallies) == 2 and editor.rallies[0].point_stats == original.point_stats
+    editor._select_rally(0, seek=False)
+    editor.merge_selected_rally()
+    assert len(editor.rallies) == 1 and editor.rallies[0].point_stats == {}
+    editor.undo_edit()
+    assert len(editor.rallies) == 2 and editor.rallies[0].point_stats == original.point_stats

@@ -27,6 +27,7 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         "team_a": "Team A", "team_b": "Team B", "initial_score_a": 0,
         "initial_score_b": 0, "overlay_path": None, "include_stats": False,
         "include_notes": False,
+        "players": None, "stats_complete": False,
     }
     if options:
         unknown = set(options) - set(result)
@@ -35,7 +36,7 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         result.update(options)
     if result["aspect_ratio"] not in {"source", "16:9", "9:16", "1:1"}:
         raise ValueError("aspect_ratio must be source, 16:9, 9:16, or 1:1")
-    for name in ("highlights_only", "scoreboard", "include_stats", "include_notes"):
+    for name in ("highlights_only", "scoreboard", "include_stats", "include_notes", "stats_complete"):
         if not isinstance(result[name], bool):
             raise ValueError(f"{name} must be a boolean")
     for name in ("initial_score_a", "initial_score_b"):
@@ -54,6 +55,9 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         if cv2.imread(str(overlay), cv2.IMREAD_UNCHANGED) is None:
             raise ValueError("The custom overlay could not be decoded as a PNG")
         result["overlay_path"] = str(overlay)
+    from models.point_stats import normalize_roster
+    if result["players"] is not None:
+        result["players"] = normalize_roster(result["players"])
     return result
 
 
@@ -67,7 +71,7 @@ def scores_before_rallies(rallies: Sequence[object], options: Mapping[str, Any])
         return float(field(item, "start_time", field(item, "start", 0)))
     for index, rally in sorted(enumerate(rallies), key=lambda pair: (start(pair[1]), pair[0])):
         scores[index] = (a, b)
-        if field(rally, "rejected", False):
+        if field(rally, "rejected", False) or field(rally, "outcome", "") == "Replay / no point":
             continue
         winner = field(rally, "winner", "")
         a += int(winner == "A")
@@ -78,11 +82,15 @@ def scores_before_rallies(rallies: Sequence[object], options: Mapping[str, Any])
 def match_statistics(rallies: Iterable[object], options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Summarize tagged points, including points omitted from the exported cut."""
     opts = prepare_export_options(options)
-    valid = [item for item in rallies if not field(item, "rejected", False)]
+    rallies = list(rallies)
+    valid = [item for item in rallies if not field(item, "rejected", False)
+             and field(item, "outcome", "") != "Replay / no point"]
     outcomes = Counter(str(field(item, "outcome", "")) for item in valid if field(item, "outcome", ""))
     players = Counter(str(field(item, "player", "")) for item in valid if field(item, "player", ""))
     wins_a = sum(field(item, "winner", "") == "A" for item in valid)
     wins_b = sum(field(item, "winner", "") == "B" for item in valid)
+    from models.statistics import calculate_statistics
+    detailed = calculate_statistics(rallies, opts)
     return {
         "rally_count": len(valid), "tagged_points": wins_a + wins_b,
         "untagged_points": len(valid) - wins_a - wins_b,
@@ -91,6 +99,7 @@ def match_statistics(rallies: Iterable[object], options: Mapping[str, Any] | Non
         "team_a": opts["team_a"], "team_b": opts["team_b"],
         "highlights": sum(bool(field(item, "starred", False)) for item in valid),
         "outcomes": dict(outcomes), "player_tags": dict(players),
+        "player_statistics": detailed,
     }
 
 
@@ -185,7 +194,12 @@ def statistics_lines(stats: Mapping[str, Any]) -> list[str]:
     if stats["untagged_points"]:
         lines.append(f"{stats['untagged_points']} untagged rallies - score may be incomplete")
     lines.extend(f"{name}: {count}" for name, count in sorted(stats["outcomes"].items())[:5])
-    if stats["player_tags"]:
+    detailed = stats.get("player_statistics", {})
+    if detailed.get("coverage", {}).get("complete", 0) or detailed.get("coverage", {}).get("partial", 0):
+        lines.append("PLAYER STATS - tagged points only")
+        for p in detailed["players"]:
+            lines.append(f"{p['name']}: {p['aces']} ace | {p['put_aways']} put-away | {p['defensive_gets']} get | {p['errors']} err")
+    elif stats["player_tags"]:
         lines.append("PLAYER TAGS")
         lines.extend(f"{name}: {count}" for name, count in sorted(stats["player_tags"].items())[:4])
     return lines

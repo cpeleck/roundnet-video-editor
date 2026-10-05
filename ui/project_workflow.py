@@ -121,15 +121,10 @@ class ProjectWorkflow:
         self.player_edit.setPlaceholderText("Player credited (optional)")
         self.note_edit = QLineEdit()
         self.note_edit.setPlaceholderText("Call or caption, e.g. OOB")
-        form.addRow("Point winner", self.winner_combo)
-        form.addRow("Outcome", self.outcome_combo)
-        form.addRow("Player", self.player_edit)
-        form.addRow("Caption", self.note_edit)
         save = QPushButton("Apply point tag")
         save.clicked.connect(self.apply_point_tag)
-        form.addRow(save)
         row2 = QHBoxLayout()
-        setup = QPushButton("Teams / initial score…")
+        setup = QPushButton("Teams / players / initial score…")
         setup.clicked.connect(self.edit_match)
         stats = QPushButton("Match statistics")
         stats.clicked.connect(self.show_match_statistics)
@@ -139,6 +134,17 @@ class ProjectWorkflow:
         self.match_score_label = QLabel("Team A  0 : 0  Team B")
         self.match_score_label.setWordWrap(True)
         form.addRow(self.match_score_label)
+        self.touch_stats_button = QPushButton("Track this point · serves and touches…")
+        self.touch_stats_button.clicked.connect(self.edit_point_statistics)
+        form.addRow(self.touch_stats_button)
+        self.touch_stats_status = QLabel("No touch statistics recorded")
+        self.touch_stats_status.setWordWrap(True)
+        form.addRow(self.touch_stats_status)
+        form.addRow("Point winner", self.winner_combo)
+        form.addRow("Outcome", self.outcome_combo)
+        form.addRow("Player", self.player_edit)
+        form.addRow("Caption", self.note_edit)
+        form.addRow(save)
         crop = QPushButton("Set assisted crop keyframes…")
         crop.clicked.connect(self.edit_crop)
         form.addRow(crop)
@@ -164,6 +170,8 @@ class ProjectWorkflow:
             if include_analysis:
                 state["analysis"] = self._analysis_snapshot()
             self._history.push(state)
+            if self.match_settings.get("stats_complete"):
+                self.match_settings["stats_complete"] = False
             if self.complete_review_checkbox.isChecked():
                 with QSignalBlocker(self.complete_review_checkbox):
                     self.complete_review_checkbox.setChecked(False)
@@ -315,7 +323,8 @@ class ProjectWorkflow:
                 state["initial_predictions"] = []
                 state["rejected_detections"] = []
                 state["complete"] = False
-                state["rallies"] = [{**r, "reviewed": False} for r in state.get("rallies", [])]
+                state["rallies"] = [{**r, "reviewed": False, "point_stats": {}} for r in state.get("rallies", [])]
+                state.setdefault("match_settings", {})["stats_complete"] = False
             if not self.load_video(state["video_path"], restore_recovery=False):
                 return
             if any(r["end_time"] > self.video_duration + .05 for r in state.get("rallies", [])):
@@ -441,21 +450,45 @@ class ProjectWorkflow:
         if not hasattr(self, "winner_combo"):
             return
         for widget in (self.winner_combo, self.outcome_combo, self.player_edit, self.note_edit,
-                       self.star_button, self.reviewed_button):
+                       self.star_button, self.reviewed_button, self.touch_stats_button):
             widget.setEnabled(rally is not None and not self._busy_editing())
         if rally:
+            self.touch_stats_button.setEnabled(not rally.rejected and not self._busy_editing())
             self.winner_combo.setCurrentIndex(max(0, self.winner_combo.findData(rally.winner)))
             self.outcome_combo.setCurrentText(rally.outcome)
             self.player_edit.setText(rally.player)
             self.note_edit.setText(rally.note)
             self.star_button.setText("★ Starred" if rally.starred else "☆ Star highlight")
             self.reviewed_button.setText("✓ Reviewed" if rally.reviewed else "Mark reviewed")
+            from models.statistics import point_issues
+            stats = rally.point_stats
+            issues = point_issues(stats, rally.winner, start=rally.start_time, end=rally.end_time)
+            self.touch_stats_status.setText("Replay — excluded from point statistics" if rally.outcome == "Replay / no point" else
+                "Touch log needs review: " + issues[0] if issues else
+                f"{len(stats.get('events', []))} events · {'Complete point' if stats.get('complete') else 'Draft / untagged'}")
+        else:
+            self.touch_stats_status.setText("Select a rally to record its touches")
+
+    def edit_point_statistics(self):
+        rally = self._selected()
+        if not rally or rally.rejected or self._busy_editing() or not self.video_path:
+            return
+        from .point_statistics import PointStatisticsDialog
+        self.player.pause()
+        dialog = PointStatisticsDialog(self.video_path, rally, self.match_settings, self)
+        try:
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                outcome = "Replay / no point" if dialog.replay else "" if rally.outcome == "Replay / no point" else rally.outcome
+                self._set_selected(point_stats=dialog.point, winner=dialog.winner, outcome=outcome, reviewed=True)
+        finally:
+            dialog.video.unload()
+            dialog.deleteLater()
 
     def edit_match(self):
         if self._busy_editing():
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle("Teams and Initial Score")
+        dialog.setWindowTitle("Teams, Players, and Initial Score")
         layout = QFormLayout(dialog)
         controls = {}
         for key, label in (("team_a", "Team A"), ("team_b", "Team B"),
@@ -469,34 +502,62 @@ class ProjectWorkflow:
                 control.setValue(int(self.match_settings[key]))
             controls[key] = control
             layout.addRow(label, control)
+        from models.point_stats import normalize_roster
+        roster = normalize_roster(self.match_settings.get("players"))
+        player_controls = {}
+        for player in roster:
+            name = QLineEdit(player["name"])
+            name.setMaxLength(80)
+            player_controls[player["player_id"]] = name
+            layout.addRow(f"Player {player['player_id']}", name)
+        note = QLabel("Player slots stay stable when names change, so past touch credits follow the rename.")
+        note.setWordWrap(True)
+        layout.addRow(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(dialog.accept)
+        def validate_roster_and_accept():
+            try:
+                normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
+                dialog.accept()
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "Player names", str(exc))
+        buttons.accepted.connect(validate_roster_and_accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._checkpoint()
             self.match_settings.update({key: (value.text().strip() or ("Team A" if key == "team_a" else "Team B")) if key.startswith("team") else value.value()
                                         for key, value in controls.items()})
+            self.match_settings["players"] = normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
             self._update_summary()
             self._changed()
 
     def _update_match_score(self):
         if not hasattr(self, "match_score_label"):
             return
-        a = self.match_settings["initial_score_a"] + sum(r.winner == "A" for r in self.rallies if not r.rejected)
-        b = self.match_settings["initial_score_b"] + sum(r.winner == "B" for r in self.rallies if not r.rejected)
+        points = [r for r in self.rallies if not r.rejected and r.outcome != "Replay / no point"]
+        a = self.match_settings["initial_score_a"] + sum(r.winner == "A" for r in points)
+        b = self.match_settings["initial_score_b"] + sum(r.winner == "B" for r in points)
         self.match_score_label.setText(f"{self.match_settings['team_a']}  {a} : {b}  {self.match_settings['team_b']}")
 
     def show_match_statistics(self):
-        from collections import Counter
-        active = [r for r in self.rallies if not r.rejected]
-        outcomes = Counter(r.outcome for r in active if r.outcome)
-        players = Counter(r.player for r in active if r.player)
-        lines = [self.match_score_label.text(), f"{sum(bool(r.winner) for r in active)} points tagged / {len(active)} candidates", ""]
-        lines += [f"{key}: {value}" for key, value in sorted(outcomes.items())]
-        if players:
-            lines += ["", "Player credits (from manual tags)"] + [f"{key}: {value}" for key, value in sorted(players.items())]
-        QMessageBox.information(self, "Match Statistics", "\n".join(lines))
+        if self._busy_editing():
+            return
+        from .statistics_dialog import StatisticsDialog
+        dialog = StatisticsDialog(self.rallies, self.match_settings, self,
+                                  protected_paths=(self.video_path, self.project_path))
+        def select_point(identity, timestamp):
+            index = next((i for i, r in enumerate(self.rallies) if r.rally_id == identity), -1)
+            if index >= 0:
+                self.review_filter.setCurrentIndex(0)
+                self._select_rally(index, seek=True)
+        dialog.point_requested.connect(select_point)
+        dialog.exec()
+        confirmed = dialog.complete.isChecked()
+        if confirmed != bool(self.match_settings.get("stats_complete")):
+            self._checkpoint()
+            self.match_settings["stats_complete"] = confirmed
+            self._changed()
+        dialog.deleteLater()
 
     def edit_crop(self):
         rally = self._selected()

@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -544,6 +545,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         self.rally_tree.setAlternatingRowColors(True)
         self.rally_tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.rally_tree.setUniformRowHeights(True)
+        self.rally_tree.setMinimumHeight(140)
         self.rally_tree.setSortingEnabled(False)
         self.rally_tree.itemSelectionChanged.connect(self._tree_selection_changed)
         self.rally_tree.itemChanged.connect(self._tree_item_changed)
@@ -597,7 +599,12 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         editor_layout.addWidget(self.apply_times_button, 4, 0, 1, 6)
         tabs = QTabWidget()
         tabs.addTab(editor, "Trim")
-        tabs.addTab(self._build_point_panel(), "Point / Highlight")
+        point_scroll = QScrollArea()
+        point_scroll.setWidgetResizable(True)
+        point_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        point_scroll.setWidget(self._build_point_panel())
+        tabs.addTab(point_scroll, "Point / Highlight")
+        tabs.setMaximumHeight(350)
         right_layout.addWidget(tabs)
 
         summary = QGroupBox("Edit summary")
@@ -1349,11 +1356,15 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         if self._busy_editing():
             return
         from uuid import uuid4
+        if self.rallies[index].point_stats and QMessageBox.question(self, "Split Annotated Point?",
+                "Splitting clears the touch log for both pieces so statistics are not counted twice. "
+                "Undo restores the original point and its log. Continue?") != QMessageBox.StandardButton.Yes:
+            return
         self._checkpoint()
         original = self.rallies[index]
         self.rallies[index : index + 1] = (
-            replace(original, end_time=split, reviewed=False),
-            replace(original, start_time=split, rally_id=uuid4().hex, winner="", outcome="", reviewed=False, serve_confidence=0.0),
+            replace(original, end_time=split, reviewed=False, point_stats={}),
+            replace(original, start_time=split, rally_id=uuid4().hex, winner="", outcome="", reviewed=False, serve_confidence=0.0, point_stats={}),
         )
         self.selected_rally_index = index + 1
         self._rebuild_rally_tree(index + 1, seek=False)
@@ -1370,10 +1381,11 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         if left.rejected or right.rejected:
             self.statusBar().showMessage("Restore a rejected candidate before merging it", 5000)
             return
-        if right.winner or right.outcome or right.player or right.note:
+        if right.winner or right.outcome or right.player or right.note or left.point_stats or right.point_stats:
             if QMessageBox.question(self, "Merge Point Annotations?",
                     "Merging makes these clips one point. The earlier point's tags are retained, "
-                    "and the later point's tags are removed. You can undo this. Continue?") != QMessageBox.StandardButton.Yes:
+                    "and the later point's tags are removed. Touch logs are cleared to avoid combining two points' statistics. "
+                    "You can undo this. Continue?") != QMessageBox.StandardButton.Yes:
                 return
         first = _rally_values(self.rallies[left_index])
         second = _rally_values(self.rallies[left_index + 1])
@@ -1384,7 +1396,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         self._checkpoint()
         merged = replace(self.rallies[left_index], start_time=min(first[0], second[0]),
                          end_time=max(first[1], second[1]), confidence=max(first[2], second[2]),
-                         enabled=first[3] or second[3], rejected=False, reviewed=False,
+                         enabled=first[3] or second[3], rejected=False, reviewed=False, point_stats={},
                          serve_confidence=merged_serve_confidence, starred=left.starred or right.starred,
                          crop_keyframes=sorted({k["time"]: k for k in [*left.crop_keyframes, *right.crop_keyframes]}.values(), key=lambda k: k["time"]))
         self.rallies[left_index : left_index + 2] = [merged]

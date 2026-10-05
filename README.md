@@ -23,6 +23,9 @@ has not yet been established on a labeled benchmark.
   annotations. Original media is never modified.
 - Tag point winners, outcomes, players, and captions; set team names and initial
   scores; inspect match totals; star selected highlights.
+- Log touch-by-touch player statistics with four-player rosters, serve attempts,
+  receives, sets, hits, and defense. Review player cards, team totals, the original
+  RPR breakdown, and who aced whom; export CSV, JSON, or a PNG stat card.
 - Export original-aspect, landscape, portrait, or square MP4 videos, optionally
   with assisted crop keyframes, a scoreboard, captions, PNG branding, and a
   three-second match-summary slate.
@@ -81,7 +84,7 @@ helps inspect boundaries without changing them.
 
 **File → Save Project** writes a `.roundnet.json` project containing the source
 reference, rally identities and edits, review status, tags, crop keyframes,
-playing-area/court setup, settings, and available diagnostic signals. It does not
+player rosters and touch logs, playing-area/court setup, settings, and available diagnostic signals. It does not
 copy the original video or embed an external learned-profile file.
 
 Changes are also autosaved to `.roundnet/recovery/` inside the application
@@ -159,7 +162,27 @@ Point winners, outcomes, player credits, and captions are entered by you; the ap
 does not automatically referee or identify players. Totals derive from those
 tags and the configured initial score. Unchecked but valid points still count
 toward the match; rejected detections do not. Unknown winners remain unscored,
-so a partially tagged match has an incomplete score.
+so a partially tagged match has an incomplete score. Replays do not earn points.
+
+### Player statistics
+
+In **Point / Highlight**, set the four names under **Teams / players / initial
+score**, select a rally, then choose **Track this point**. Log serve attempts and
+each player's touches while replaying the video. Record the winner and confirm
+when the point is fully logged; drafts can be saved without inventing missing data.
+
+**Match statistics** shows serve %, aces/aced, put-away %, defensive gets,
+strong/weak sets, errors, ace/rim, breaks/broken, team totals, and a navigable
+point log. Export player CSV, full event JSON, or a shareable PNG card. Touch logs
+are saved in projects and recovery, and participate in undo/redo.
+
+The **Original RPR** tab calculates Hitting, Serving, Defense, and Efficiency
+using the published original model. It requires explicit full-match confirmation,
+complete point logs, known results, and serve/hit attempts for each rated player.
+It is not a claim to reproduce later proprietary rating revisions. Player identity
+and touch quality are entered manually, not detected from video. See
+[statistics definitions and formulas](docs/statistics.md) for denominators,
+incomplete-data handling, and attribution.
 
 Stars mark highlights independently from whether a clip is enabled. Choose
 starred-only export for a highlights cut. The scoreboard shows the score before
@@ -250,7 +273,7 @@ ROUNDNET_GUI_TESTS=1 python -m pytest tests/test_gui_workflow.py -q
 The detector can write JSON with `--output-json` and diagnostic series with
 `--include-signals`. Tests cover segmentation, timing, court/player evidence,
 correction provenance, held-out training, source-time interchange, project
-persistence/history, crop/presentation plans, and real FFmpeg runs using generated
+persistence/history, touch-order statistics and original RPR, crop/presentation plans, and real FFmpeg runs using generated
 media. Native desktop smoke checks require a graphical macOS session. Synthetic
 test results must not be read as measured real-roundnet accuracy.
 
@@ -275,10 +298,11 @@ test results must not be read as measured real-roundnet accuracy.
 ```text
 main.py                 application entry point
 config/                 detection/export settings
-models/                 rally metadata, projects, and edit history
+models/                 rally metadata, player statistics, projects, and edit history
 detection/              signals, court/player cues, scoring, and segmentation
 training/               correction labels, local calibration, and evaluation
 video/                  media metadata, FFmpeg export, presentation, and EDL
-ui/                     player, timeline, review, court/crop, and learning dialogs
+ui/                     player, timeline, review, statistics, court/crop, and learning dialogs
+docs/                   statistics workflow, metric definitions, and rating formulas
 tests/                  automated regression and generated-media integration tests
 ```

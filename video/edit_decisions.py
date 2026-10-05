@@ -35,6 +35,7 @@ def build_edit_decisions(source_path: str | os.PathLike[str], rallies: Iterable[
             "player": str(field(rally, "player", "")),
             "note": str(field(rally, "note", "")),
             "crop_keyframes": field(rally, "crop_keyframes", []),
+            "point_stats": field(rally, "point_stats", {}),
         })
         cursor += segment.duration
     return {"schema_version": 1, "format": "roundnet_edit_decisions", "time_unit": "seconds",

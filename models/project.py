@@ -104,6 +104,10 @@ def validate_project(state: dict[str, Any]) -> None:
     if not isinstance(state.get("signals", {}) or {}, dict):
         raise ValueError("Invalid saved analysis")
     match = state.get("match_settings", {})
+    from .point_stats import normalize_roster
+    normalize_roster(match.get("players"))
+    if not isinstance(match.get("stats_complete", False), bool):
+        raise ValueError("Invalid statistics completeness flag")
     for key in ("initial_score_a", "initial_score_b"):
         value = match.get(key, 0)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 999:
