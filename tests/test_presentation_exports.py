@@ -79,10 +79,11 @@ def test_real_export_renders_score_crop_overlay_and_summary(tmp_path: Path, has_
     result = FFmpegExporter().export(source, output, rallies, prefer_hardware=False,
         export_options={"aspect_ratio": ratio, "scoreboard": True, "highlights_only": True,
                         "team_a": "A':;[x]", "team_b": "B", "include_stats": True,
+                        "stats_duration": 4.0,
                         "include_notes": True, "overlay_path": str(logo)})
     metadata = probe_video_metadata(output)
     assert metadata.display_resolution == crop_dimensions(320, 180, ratio)
-    assert metadata.duration == pytest.approx(4.1, abs=.15)
+    assert metadata.duration == pytest.approx(5.1, abs=.15)
     assert metadata.has_audio == has_audio
     assert result.segment_count == 1
     assert not list(tmp_path.glob(".roundnet-export-*"))
@@ -91,5 +92,5 @@ def test_real_export_renders_score_crop_overlay_and_summary(tmp_path: Path, has_
     success, frame = capture.read()
     capture.release()
     assert success
-    # The appended summary has a dark slate background, not the test pattern.
-    assert tuple(frame[0, 0].tolist()) == pytest.approx((35, 25, 17), abs=8)
+    # The appended player card has its own dark background, not the source frame.
+    assert tuple(frame[0, 0].tolist()) == pytest.approx((61, 42, 32), abs=8)

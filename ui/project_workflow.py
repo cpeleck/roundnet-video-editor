@@ -32,7 +32,8 @@ class ProjectWorkflow:
     def _init_workflow(self):
         self.court_context = None
         self.match_settings = {"team_a": "Team A", "team_b": "Team B",
-                               "initial_score_a": 0, "initial_score_b": 0}
+                               "initial_score_a": 0, "initial_score_b": 0,
+                               "starting_server": "A1", "starting_receiver": "B1"}
         self.project_path = None
         self._history = EditHistory()
         self._restoring = False
@@ -121,7 +122,7 @@ class ProjectWorkflow:
         self.player_edit.setPlaceholderText("Player credited (optional)")
         self.note_edit = QLineEdit()
         self.note_edit.setPlaceholderText("Call or caption, e.g. OOB")
-        save = QPushButton("Apply point tag")
+        save = QPushButton("Save manual tag / caption")
         save.clicked.connect(self.apply_point_tag)
         row2 = QHBoxLayout()
         setup = QPushButton("Teams / players / initial score…")
@@ -134,12 +135,15 @@ class ProjectWorkflow:
         self.match_score_label = QLabel("Team A  0 : 0  Team B")
         self.match_score_label.setWordWrap(True)
         form.addRow(self.match_score_label)
-        self.touch_stats_button = QPushButton("Track this point · serves and touches…")
+        self.touch_stats_button = QPushButton("Log point · tap players in touch order…")
         self.touch_stats_button.clicked.connect(self.edit_point_statistics)
         form.addRow(self.touch_stats_button)
         self.touch_stats_status = QLabel("No touch statistics recorded")
         self.touch_stats_status.setWordWrap(True)
         form.addRow(self.touch_stats_status)
+        legacy = QLabel("For new scoring, use Log point above. These manual tags also edit older projects.")
+        legacy.setWordWrap(True)
+        form.addRow(legacy)
         form.addRow("Point winner", self.winner_combo)
         form.addRow("Outcome", self.outcome_combo)
         form.addRow("Player", self.player_edit)
@@ -164,15 +168,15 @@ class ProjectWorkflow:
                 "analysis_roi": deepcopy(self.analysis_roi),
                 "analysis_court_context": deepcopy(self.analysis_court_context)}
 
-    def _checkpoint(self, *, include_analysis=False):
+    def _checkpoint(self, *, include_analysis=False, stats_affecting=True):
         if not self._restoring:
             state = self._edit_snapshot()
             if include_analysis:
                 state["analysis"] = self._analysis_snapshot()
             self._history.push(state)
-            if self.match_settings.get("stats_complete"):
+            if stats_affecting and self.match_settings.get("stats_complete"):
                 self.match_settings["stats_complete"] = False
-            if self.complete_review_checkbox.isChecked():
+            if stats_affecting and self.complete_review_checkbox.isChecked():
                 with QSignalBlocker(self.complete_review_checkbox):
                     self.complete_review_checkbox.setChecked(False)
 
@@ -406,7 +410,13 @@ class ProjectWorkflow:
         rally = self._selected()
         if rally is None or self._busy_editing():
             return
-        self._checkpoint()
+        changed = {key for key, value in changes.items() if getattr(rally, key) != value}
+        if not changed:
+            return
+        statistical_fields = {"winner", "point_stats", "rejected", "start_time", "end_time"}
+        affects_stats = bool(statistical_fields.intersection(changed)) or (
+            "outcome" in changed and (rally.outcome == "Replay / no point" or changes["outcome"] == "Replay / no point"))
+        self._checkpoint(stats_affecting=affects_stats)
         self.rallies[self.selected_rally_index] = replace(rally, **changes)
         self._rebuild_rally_tree()
         self._update_summary()
@@ -442,8 +452,34 @@ class ProjectWorkflow:
         outcome = self.outcome_combo.currentText()
         if outcome == "Replay / no point":
             winner = ""
-        self._set_selected(winner=winner, outcome=outcome, player=self.player_edit.text().strip(),
-                           note=self.note_edit.text().strip(), reviewed=True)
+        player_name = self.player_edit.text().strip()
+        changes = {"winner": winner, "outcome": outcome, "player": player_name,
+                   "note": self.note_edit.text().strip(), "reviewed": True}
+        if outcome == "Ace":
+            from models.point_stats import new_event, normalize_roster
+            roster = normalize_roster(self.match_settings.get("players"))
+            server = next((p["player_id"] for p in roster if p["name"].casefold() == player_name.casefold()), "")
+            if not server:
+                QMessageBox.warning(self, "Choose a roster player", "For an ace, enter one of the four player names set in Teams / players.")
+                return
+            current = self._selected()
+            if current and current.point_stats.get("events"):
+                existing = current.point_stats
+                if (len(existing["events"]) != 1 or existing["events"][0]["kind"] != "serve"
+                        or existing["events"][0]["result"] != "ace" or existing["server_id"] != server):
+                    QMessageBox.warning(self, "Edit the touch log", "This point already has touches. Use Log point to change its ace and preserve the sequence.")
+                    return
+                changes["point_stats"] = existing
+                changes["winner"] = server[0]
+                self._set_selected(**changes)
+                return
+            receiver = self.match_settings.get("starting_receiver", "")
+            if not receiver or receiver[0] == server[0]:
+                receiver = next(p["player_id"] for p in roster if p["team"] != server[0])
+            changes["winner"] = server[0]
+            changes["point_stats"] = {"version": 1, "server_id": server, "receiver_id": receiver,
+                                      "complete": True, "events": [new_event(server, "serve", "ace")]}
+        self._set_selected(**changes)
 
     def _load_point_panel(self):
         rally = self._selected()
@@ -510,6 +546,15 @@ class ProjectWorkflow:
             name.setMaxLength(80)
             player_controls[player["player_id"]] = name
             layout.addRow(f"Player {player['player_id']}", name)
+        starter = QComboBox()
+        receiver = QComboBox()
+        for p in roster:
+            for combo in (starter, receiver):
+                combo.addItem(f"{p['name']} · {p['player_id']}", p["player_id"])
+        starter.setCurrentIndex(max(0, starter.findData(self.match_settings.get("starting_server", "A1"))))
+        receiver.setCurrentIndex(max(0, receiver.findData(self.match_settings.get("starting_receiver", "B1"))))
+        layout.addRow("Starting server", starter)
+        layout.addRow("Starting receiver", receiver)
         note = QLabel("Player slots stay stable when names change, so past touch credits follow the rename.")
         note.setWordWrap(True)
         layout.addRow(note)
@@ -517,6 +562,8 @@ class ProjectWorkflow:
         def validate_roster_and_accept():
             try:
                 normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
+                if starter.currentData()[0] == receiver.currentData()[0]:
+                    raise ValueError("Starting server and receiver must be on opposite teams")
                 dialog.accept()
             except ValueError as exc:
                 QMessageBox.warning(dialog, "Player names", str(exc))
@@ -524,10 +571,14 @@ class ProjectWorkflow:
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self._checkpoint()
+            score_changed = any(controls[key].value() != self.match_settings[key]
+                                for key in ("initial_score_a", "initial_score_b"))
+            self._checkpoint(stats_affecting=score_changed)
             self.match_settings.update({key: (value.text().strip() or ("Team A" if key == "team_a" else "Team B")) if key.startswith("team") else value.value()
                                         for key, value in controls.items()})
             self.match_settings["players"] = normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
+            self.match_settings["starting_server"] = starter.currentData()
+            self.match_settings["starting_receiver"] = receiver.currentData()
             self._update_summary()
             self._changed()
 

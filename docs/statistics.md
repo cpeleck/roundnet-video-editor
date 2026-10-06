@@ -2,13 +2,18 @@
 
 ## Workflow
 
-Set four names in Point / Highlight → Teams / players / initial score. Slots A1,
+Set four names and the starting server/receiver in Point / Highlight → Teams /
+players / initial score. Slots A1,
 A2, B1, B2 are stable identities: renaming a player updates their displayed name
 without moving any credits. This is one four-player match, not a season database.
 
-Select a rally and choose Track this point. The dialog has its own video preview.
-Record every serve attempt, then each receive, set, hit, and defensive touch in
-order. Multiple possessions and both partners' contributions are supported.
+Select a rally and choose Log point. The dialog has its own video preview. Tap
+the four player buttons in touch order; the usual serve, receive, set, hit, and
+defense roles are suggested. Ace, Fault, Error, and Point Won finish the point
+and select its winner. Undo touch reverses a quick action. The detailed controls
+below the buttons handle other touch types, qualities, and unusual plays. Record
+every serve attempt and touch. Multiple possessions and both partners'
+contributions are supported.
 Optional source timestamps allow jumping back to a touch. A let is not a serve
 attempt. Record faults individually, including a rim when that is the reason.
 The winner is explicitly selected; this is not automatic refereeing or rotation.
@@ -66,8 +71,9 @@ tagged winners; player-event coverage is reported separately.
 
 Unchecked valid rallies count: omitting a point from a highlight reel must not
 change match statistics. Rejected detections and Replay / no point are excluded.
-Legacy free-text player credits are preserved but are not guessed into touch
-statistics. Log those old rallies to obtain detailed player statistics.
+An Ace quick tag with a roster player's name creates an ace serve event and
+awards the point together. Other legacy free-text credits are preserved but are
+not guessed into touch statistics; log those old rallies for detailed statistics.
 
 ## Original Roundnet Player Rating
 
@@ -101,7 +107,8 @@ RPR is shown only after all non-rejected, non-replay points are complete, none h
 an unknown result or invalid sequence, initial scores are 0–0, and you explicitly
 confirm the whole match in Match statistics. Each player's rating additionally
 requires at least one serve attempt and one hit attempt; undefined divisions
-show a dash. Edits invalidate the match-level confirmation. This is a statistical
+show a dash. Changes to scoring or touch evidence invalidate the match-level
+confirmation; starring a highlight does not. This is a statistical
 performance model, not a USAR skill level or a prediction of future ability.
 
 ## Reviewing, saving, and sharing
@@ -118,7 +125,9 @@ Projects/autosave and undo preserve rosters and touch logs. Older projects open
 with empty touch logs and default player slots. Splitting or merging an annotated
 point asks first and clears its touch logs; Undo restores them. Source replacement
 clears old touch evidence. Boundary edits that strand a timestamp are flagged.
-Video statistics slates include compact player counts when touch logs exist.
+Video exports append the same final-score, four-player card as the shareable PNG.
+It includes percentages and the four RPR components. Preview it in the export
+dialog and set its duration from 1 to 30 seconds.
 
 Reference app description (touch-order workflow, not code or exact-current-RPR
 equivalence): https://apps.apple.com/us/app/roundnet-stats-tracker/id1458198404

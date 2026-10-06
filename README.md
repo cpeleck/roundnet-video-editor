@@ -21,14 +21,13 @@ has not yet been established on a labeled benchmark.
   sequence. Adjust, add, split, merge, reject, restore, and mark clips reviewed.
 - Save editable projects, recover autosaved work, and undo/redo rally edits and
   annotations. Original media is never modified.
-- Tag point winners, outcomes, players, and captions; set team names and initial
-  scores; inspect match totals; star selected highlights.
-- Log touch-by-touch player statistics with four-player rosters, serve attempts,
-  receives, sets, hits, and defense. Review player cards, team totals, the original
+- Set four players and the starting server and receiver, then tap players in touch
+  order to score points and record their statistics together. Star highlights.
+- Review player cards, team totals, the original
   RPR breakdown, and who aced whom; export CSV, JSON, or a PNG stat card.
 - Export original-aspect, landscape, portrait, or square MP4 videos, optionally
   with assisted crop keyframes, a scoreboard, captions, PNG branding, and a
-  three-second match-summary slate.
+  previewable four-player end card with adjustable duration.
 - Exchange original-source cuts through JSON or a restricted CMX3600 EDL.
 - Save reviewed correction labels, train a local profile from several recordings,
   inspect held-out evaluation, and explicitly activate or disable the profile.
@@ -166,10 +165,12 @@ so a partially tagged match has an incomplete score. Replays do not earn points.
 
 ### Player statistics
 
-In **Point / Highlight**, set the four names under **Teams / players / initial
-score**, select a rally, then choose **Track this point**. Log serve attempts and
-each player's touches while replaying the video. Record the winner and confirm
-when the point is fully logged; drafts can be saved without inventing missing data.
+In **Point / Highlight**, set the four names and starting server/receiver under
+**Teams / players / initial score**. Select a rally and choose **Log point**. Tap
+player buttons in touch order, then use **Ace**, **Fault**, **Error**, or **Point
+Won**. The point score and player statistics save in one step. **Undo touch**
+reverses an action inside the dialog; the main **Undo** restores a saved point.
+Detailed touch controls remain available for unusual plays and quality changes.
 
 **Match statistics** shows serve %, aces/aced, put-away %, defensive gets,
 strong/weak sets, errors, ace/rim, breaks/broken, team totals, and a navigable
@@ -188,7 +189,8 @@ Stars mark highlights independently from whether a clip is enabled. Choose
 starred-only export for a highlights cut. The scoreboard shows the score before
 each included point, accounting for valid points omitted from the cut. Optional
 captions use the clip's player/outcome/note. A supplied PNG is placed at the lower
-right as branding. The summary slate adds three seconds to the export.
+right as branding. The export dialog previews the final-score player card and lets
+you set how many seconds it stays on screen.
 
 **Set assisted crop keyframes** lets you choose source timestamps and click the
 desired framing center. Export smoothly moves between those centers and clamps

@@ -26,7 +26,7 @@ from .errors import (
 from .metadata import VideoMetadata, probe_video_metadata
 from .presentation import (
     crop_dimensions, crop_filter, field, match_statistics,
-    prepare_export_options, render_card, scores_before_rallies, statistics_lines,
+    prepare_export_options, render_card, render_player_end_card, scores_before_rallies,
 )
 
 
@@ -192,6 +192,7 @@ def build_filter_complex(
     segment_overlays: Mapping[int, int] | None = None,
     custom_overlay_input: int | None = None,
     stats_input: int | None = None,
+    stats_duration: float = 5.0,
     output_size: tuple[int, int] | None = None,
     fps: float = 30,
 ) -> str:
@@ -241,9 +242,9 @@ def build_filter_complex(
         filters.append(f"[{video_label}][logo]overlay=x=W-w-{padding}:y=H-h-{padding}:eof_action=repeat:shortest=0[{next_label}]")
         video_label = next_label
     if stats_input is not None:
-        filters.append(f"[{stats_input}:v:0]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),trim=duration=3,fps={fps:.9f},setsar=1[statsv]")
+        filters.append(f"[{stats_input}:v:0]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),trim=duration={stats_duration:.3f},fps={fps:.9f},setsar=1[statsv]")
         if has_audio:
-            filters.append("anullsrc=r=48000:cl=stereo,atrim=duration=3,asetpts=PTS-STARTPTS[statsa]")
+            filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={stats_duration:.3f},asetpts=PTS-STARTPTS[statsa]")
             filters.append(f"[{video_label}][{audio_label}][statsv][statsa]concat=n=2:v=1:a=1[vout][aout]")
         else:
             filters.append(f"[{video_label}][statsv]concat=n=2:v=1:a=0[vout]")
@@ -394,10 +395,11 @@ def _prepare_presentation(
         images.append(Path(options["overlay_path"]))
         filters["custom_overlay_input"] = len(images)
     if options["include_stats"]:
-        path = directory / "match-summary.png"
-        render_card(path, width, height, statistics_lines(match_statistics(rallies, options)))
+        path = directory / "player-end-card.png"
+        render_player_end_card(path, width, height, match_statistics(rallies, options))
         images.append(path)
         filters["stats_input"] = len(images)
+        filters["stats_duration"] = options["stats_duration"]
     return images, filters
 
 
@@ -670,7 +672,7 @@ class FFmpegExporter:
             # OpenCV cannot report audio, so make a cheap one-frame query rather
             # than dropping a source track or building a graph for a missing one.
             audio_present = self._detect_audio_stream(source)
-        output_duration = sum(segment.duration for segment in segments) + (3.0 if options["include_stats"] else 0.0)
+        output_duration = sum(segment.duration for segment in segments) + (options["stats_duration"] if options["include_stats"] else 0.0)
         temporary = destination.with_name(
             f".{destination.stem}.partial-{uuid4().hex}.mp4"
         )

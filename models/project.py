@@ -106,6 +106,11 @@ def validate_project(state: dict[str, Any]) -> None:
     match = state.get("match_settings", {})
     from .point_stats import normalize_roster
     normalize_roster(match.get("players"))
+    from .point_stats import PLAYER_IDS
+    server = match.get("starting_server", "A1")
+    receiver = match.get("starting_receiver", "B1")
+    if server not in PLAYER_IDS or receiver not in PLAYER_IDS or server[0] == receiver[0]:
+        raise ValueError("Starting server and receiver must be on opposite teams")
     if not isinstance(match.get("stats_complete", False), bool):
         raise ValueError("Invalid statistics completeness flag")
     for key in ("initial_score_a", "initial_score_b"):

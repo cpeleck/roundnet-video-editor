@@ -91,11 +91,18 @@ def test_native_review_recovery_and_annotation_workflow(window, tmp_path):
     editor.restore_rally()
     assert editor.rallies[0].enabled and not editor.rejected_detections
     editor.winner_combo.setCurrentIndex(1)
+    from models.point_stats import normalize_roster
+    roster = normalize_roster()
+    roster[0]["name"] = "Alex"
+    editor.match_settings["players"] = roster
     editor.outcome_combo.setCurrentText("Ace")
     editor.player_edit.setText("Alex")
     editor.note_edit.setText("Well placed")
     editor.apply_point_tag()
     assert editor.rallies[0].winner == "A"
+    assert editor.rallies[0].point_stats["events"][0]["result"] == "ace"
+    from models.statistics import calculate_statistics
+    assert calculate_statistics(editor.rallies, editor.match_settings)["players"][0]["aces"] == 1
     assert "1 : 0" in editor.match_score_label.text()
     editor.next_uncertain()
     assert editor.selected_rally_index == 1
@@ -136,7 +143,7 @@ def test_native_analysis_undo_preserves_feature_provenance(window):
     assert np.all(editor.detection_result.rally_scores == 1)
     editor.complete_review_checkbox.setChecked(True)
     editor.toggle_star()
-    assert not editor.complete_review_checkbox.isChecked()
+    assert editor.complete_review_checkbox.isChecked()
 
 
 def test_native_dialogs_and_preview(window):
@@ -165,8 +172,13 @@ def test_native_dialogs_and_preview(window):
     export = ExportDialog("/private/tmp/smoke-result.mp4", False, False, 1, 2, editor)
     export.aspect_combo.setCurrentIndex(2)
     export.scoreboard_checkbox.setChecked(True)
+    export.stats_checkbox.setChecked(True)
+    export.stats_duration.setValue(6.5)
+    assert export.stats_preview.pixmap() is not None
+    assert export.stats_duration.isEnabled()
     assert export.export_options["aspect_ratio"] == "9:16"
     assert export.export_options["scoreboard"] is True
+    assert export.export_options["stats_duration"] == 6.5
     export.reject()
     editor.player.preview_ranges([(1, 2), (3, 4)])
     editor.player.pause()
@@ -235,8 +247,9 @@ def test_native_background_export_with_presentation(window, tmp_path):
                Rally(1, 2, starred=True, winner="B", note="Nice play", player="Alex")]
     worker = ExportWorker(editor.video_path, str(output), rallies, False)
     worker.export_options = {"aspect_ratio": "9:16", "highlights_only": True,
-                             "scoreboard": True, "include_stats": True, "include_notes": True,
-                             "team_a": "Équipe A", "team_b": "Team B"}
+                                 "scoreboard": True, "include_stats": True, "include_notes": True,
+                                 "stats_duration": 4.0,
+                                 "team_a": "Équipe A", "team_b": "Team B"}
     finished, errors = [], []
     loop = QEventLoop()
     worker.succeeded.connect(finished.append)
@@ -258,7 +271,7 @@ def test_native_background_export_with_presentation(window, tmp_path):
     metadata = probe_video_metadata(output)
     width, height = metadata.display_resolution
     assert width / height == pytest.approx(9/16)
-    assert metadata.duration == pytest.approx(4, abs=.15)
+    assert metadata.duration == pytest.approx(5, abs=.15)
 
 
 def _logged_point(start=1, server="A1", receiver="B1"):
@@ -349,6 +362,62 @@ def test_native_touch_editor_saves_ordered_events_and_undo(window, tmp_path, mon
     assert editor.rallies[0].point_stats["complete"]
 
 
+def test_guided_ace_updates_score_stats_and_undo(window, monkeypatch):
+    from models import Rally
+    from models.statistics import calculate_statistics
+    from ui.point_statistics import PointStatisticsDialog
+
+    editor, _ = window
+    editor.rallies = [Rally(1, 3)]
+    editor._rebuild_rally_tree(0, seek=False)
+
+    def log_ace(dialog):
+        dialog.quick_touch("A1")
+        assert dialog.events[0]["kind"] == "serve"
+        dialog.quick_ace()
+        assert dialog.complete.isChecked() and dialog.winner_combo.currentData() == "A"
+        assert "1 : 0" in dialog.score_preview.text()
+        dialog.quick_undo()
+        assert dialog.events[0]["result"] == "in" and not dialog.complete.isChecked()
+        dialog.quick_ace()
+        dialog._save()
+        return dialog.result()
+
+    monkeypatch.setattr(PointStatisticsDialog, "exec", log_ace)
+    editor.edit_point_statistics()
+    assert "1 : 0" in editor.match_score_label.text()
+    report = calculate_statistics(editor.rallies, editor.match_settings)
+    assert report["players"][0]["aces"] == 1
+    assert report["players"][2]["aced"] == 1
+    assert report["coverage"]["complete"] == 1
+    editor.undo_edit()
+    assert editor.rallies[0].winner == "" and editor.rallies[0].point_stats == {}
+
+
+def test_guided_fault_error_and_point_won(window):
+    from models import Rally
+    from models.statistics import point_issues
+    from ui.point_statistics import PointStatisticsDialog
+
+    editor, _ = window
+    cases = [
+        (("A1",), "quick_fault", "B", "fault"),
+        (("A1", "B1", "B2"), "quick_error", "A", "error"),
+        (("A1", "B1", "B2", "B1"), "quick_point_won", "B", "auto"),
+    ]
+    for players, action, winner, ending in cases:
+        dialog = PointStatisticsDialog(editor.video_path, Rally(1, 3), editor.match_settings, editor)
+        for player in players:
+            dialog.quick_touch(player)
+        getattr(dialog, action)()
+        assert dialog.complete.isChecked()
+        assert dialog.winner_combo.currentData() == winner
+        assert dialog.events[-1]["result"] == ending
+        assert point_issues(dialog._current_point(), winner) == []
+        dialog.video.unload()
+        dialog.deleteLater()
+
+
 def test_native_statistics_tabs_exports_confirmation_and_point_navigation(window, tmp_path, monkeypatch):
     from models.point_stats import normalize_roster
     from PySide6.QtGui import QImage
@@ -396,7 +465,7 @@ def test_native_statistics_tabs_exports_confirmation_and_point_navigation(window
     editor.redo_edit()
     assert editor.match_settings["stats_complete"] is True
     editor.toggle_star()
-    assert editor.match_settings["stats_complete"] is False
+    assert editor.match_settings["stats_complete"] is True
 
 
 def test_native_touch_logs_survive_save_rejection_split_and_merge_undo(window, tmp_path):

@@ -30,15 +30,24 @@ class PointStatisticsDialog(QDialog):
         self.roster = normalize_roster(settings.get("players"))
         self.names = {p["player_id"]: p["name"] for p in self.roster}
         self.point = normalize_point_stats(rally.point_stats) or {
-            "version": 1, "server_id": "", "receiver_id": "", "complete": False, "events": []}
+            "version": 1, "server_id": settings.get("starting_server", "A1"),
+            "receiver_id": settings.get("starting_receiver", "B1"), "complete": False, "events": []}
         self.events = deepcopy(self.point["events"])
+        self.quick_history = []
         self.winner = rally.winner
         self.replay = rally.outcome == "Replay / no point"
+        other_points = [item for item in getattr(parent, "rallies", [])
+                        if item.rally_id != rally.rally_id and item.start_time < rally.start_time and not item.rejected
+                        and item.outcome != "Replay / no point"]
+        self.base_score_a = settings.get("initial_score_a", 0) + sum(item.winner == "A" for item in other_points)
+        self.base_score_b = settings.get("initial_score_b", 0) + sum(item.winner == "B" for item in other_points)
+        self.team_a = settings.get("team_a", "Team A")
+        self.team_b = settings.get("team_b", "Team B")
         self._loading = False
         root = QVBoxLayout(self)
-        intro = QLabel("Record every serve attempt, then each receive, set, hit, and defensive touch. "
-                       "Auto derives put-aways and defensive gets from the sequence; quality is your judgment. "
-                       "Drafts keep unknown results unknown. Player names are set in Teams / players.")
+        intro = QLabel("Tap the four players in touch order. Ace, Fault, and Error finish a point; "
+                       "Point Won finishes a winning hit. The score and player counts are saved together. "
+                       "Successful receives and sets default to Strong; revise any different touch below.")
         intro.setWordWrap(True)
         root.addWidget(intro)
         body = QHBoxLayout()
@@ -71,6 +80,30 @@ class PointStatisticsDialog(QDialog):
         self.replay_box.setChecked(self.replay)
         meta.addRow(self.replay_box)
         right.addLayout(meta)
+        self.score_preview = QLabel()
+        self.score_preview.setStyleSheet("font-weight: bold; color: #79c0ff")
+        right.addWidget(self.score_preview)
+        guide = QLabel("1  Tap server and receiver   →   2  Tap each next touch   →   3  Finish the point")
+        guide.setWordWrap(True)
+        right.addWidget(guide)
+        player_row = QHBoxLayout()
+        self.player_buttons = {}
+        for player in self.roster:
+            pid = player["player_id"]
+            button = QPushButton(f"{player['name']}\n{pid}")
+            button.setToolTip("Append this player's next touch in sequence")
+            button.clicked.connect(lambda checked=False, identity=pid: self.quick_touch(identity))
+            self.player_buttons[pid] = button
+            player_row.addWidget(button)
+        right.addLayout(player_row)
+        finish_row = QHBoxLayout()
+        for title, action in (("Ace", self.quick_ace), ("Fault", self.quick_fault),
+                              ("Error", self.quick_error), ("Point Won", self.quick_point_won),
+                              ("Undo touch", self.quick_undo)):
+            button = QPushButton(title)
+            button.clicked.connect(action)
+            finish_row.addWidget(button)
+        right.addLayout(finish_row)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(("#", "Player", "Touch", "Result", "Time"))
         self.table.verticalHeader().hide()
@@ -178,6 +211,112 @@ class PointStatisticsDialog(QDialog):
                          time=round(self.video.position_seconds, 3) if self.timestamp.isChecked() else None,
                          tough=self.tough.isChecked())
 
+    def _quick_snapshot(self):
+        self.quick_history.append((deepcopy(self.events), self.server.currentData(), self.receiver.currentData(),
+                                   self.winner_combo.currentData(), self.complete.isChecked()))
+
+    def _quick_restore(self, snapshot):
+        events, server, receiver, winner, complete = snapshot
+        self.events = events
+        self.server.setCurrentIndex(self.server.findData(server))
+        self.receiver.setCurrentIndex(self.receiver.findData(receiver))
+        self.winner_combo.setCurrentIndex(self.winner_combo.findData(winner))
+        self.complete.setChecked(complete)
+        self.refresh()
+
+    def quick_undo(self):
+        if self.quick_history:
+            self._quick_restore(self.quick_history.pop())
+
+    def quick_touch(self, player_id):
+        """Add the usual next role; detailed controls can refine unusual plays."""
+        if self.complete.isChecked() and self.events and not (
+                self.events[-1]["kind"] == "serve" and self.events[-1]["result"] in ("fault", "rim")):
+            self.status.setText("This point is complete. Undo the finish before adding a touch.")
+            return
+        if self.events and self.events[-1]["result"] in ("ace", "error", "no_touch"):
+            self.status.setText("This point has ended. Undo the finish before adding a touch.")
+            return
+        self._quick_snapshot()
+        if self.complete.isChecked():
+            self.winner_combo.setCurrentIndex(self.winner_combo.findData(""))
+        if not self.events or all(e["kind"] == "serve" and e["result"] in ("fault", "rim", "let") for e in self.events):
+            kind, result = "serve", "in"
+            self.server.setCurrentIndex(self.server.findData(player_id))
+            if self.receiver.currentData() and self.receiver.currentData()[0] == player_id[0]:
+                opponent = next(p["player_id"] for p in self.roster if p["team"] != player_id[0])
+                self.receiver.setCurrentIndex(self.receiver.findData(opponent))
+        else:
+            last = self.events[-1]
+            if last["kind"] == "serve":
+                kind, result = "receive", "strong"
+                self.receiver.setCurrentIndex(self.receiver.findData(player_id))
+            elif last["kind"] == "hit":
+                kind, result = "defense", "auto"
+            elif last["kind"] in ("receive", "defense"):
+                kind, result = "set", "strong"
+            else:
+                kind, result = "hit", "auto"
+        self.events.append(new_event(player_id, kind, result))
+        self.complete.setChecked(False)
+        self.refresh()
+
+    def _quick_finish(self, result):
+        if not self.events:
+            self.quick_touch(self.server.currentData())
+            self.quick_history.pop()
+        last = self.events[-1]
+        if result in ("ace", "fault") and last["kind"] != "serve":
+            self.status.setText("Ace and Fault apply to the last serve. Undo or select that serve first.")
+            return
+        if result == "error" and last["kind"] == "serve":
+            self.status.setText("Use Fault for a serve error, or tap the player who made the next touch.")
+            return
+        self._quick_snapshot()
+        if result == "error" and last["kind"] == "defense":
+            result = "touch_not_returned"
+        last["result"] = result
+        winner = last["player_id"][0] if result == "ace" else ("B" if last["player_id"][0] == "A" else "A")
+        self.winner_combo.setCurrentIndex(self.winner_combo.findData(winner))
+        self.complete.setChecked(True)
+        self.refresh()
+        issues = point_issues(self._current_point(), winner, start=self.rally.start_time, end=self.rally.end_time)
+        if issues:
+            self.status.setText("Needs correction before saving: " + " ".join(issues[:2]))
+        else:
+            self.status.setText(f"{self.names[last['player_id']]}: {LABELS.get(result, result)}. Team {winner} gains one point; "
+                                "the player event and score save together. Undo touch reverses this action.")
+
+    def quick_ace(self):
+        self._quick_finish("ace")
+
+    def quick_fault(self):
+        self._quick_finish("fault")
+
+    def quick_error(self):
+        self._quick_finish("error")
+
+    def quick_point_won(self):
+        if not self.events:
+            self.status.setText("Tap the players in touch order before awarding a point.")
+            return
+        last = self.events[-1]
+        if last["kind"] == "serve":
+            self.quick_ace()
+            return
+        if last["kind"] != "hit":
+            self.status.setText("Tap the winning hitter, or use Error for the last losing touch.")
+            return
+        self._quick_snapshot()
+        winner = last["player_id"][0]
+        self.winner_combo.setCurrentIndex(self.winner_combo.findData(winner))
+        self.complete.setChecked(True)
+        self.refresh()
+        issues = point_issues(self._current_point(), winner, start=self.rally.start_time, end=self.rally.end_time)
+        self.status.setText("Needs correction before saving: " + " ".join(issues[:2]) if issues else
+                            f"Team {winner} gains one point. {self.names[last['player_id']]} gets a put-away "
+                            "if the hit was not returned; the score and stats save together.")
+
     def add_event(self):
         event = self._control_event()
         self.events.append(event)
@@ -263,6 +402,10 @@ class PointStatisticsDialog(QDialog):
 
     def refresh_status(self, *_):
         point = self._current_point()
+        winner = "" if self.replay_box.isChecked() else self.winner_combo.currentData()
+        self.score_preview.setText(
+            f"Score with this point: {self.team_a} {self.base_score_a + (winner == 'A')} : "
+            f"{self.base_score_b + (winner == 'B')} {self.team_b}")
         resolved = resolve_events(point, self.winner_combo.currentData())
         for row, (event, original) in enumerate(zip(resolved, self.events)):
             if original["result"] == "auto" and self.table.item(row, 3):

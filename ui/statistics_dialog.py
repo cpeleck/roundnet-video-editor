@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
-from PySide6.QtCore import QRect, QSaveFile, QIODevice, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox,
     QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTableWidget,
     QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout)
 
 from models.statistics import COUNTERS, calculate_statistics, export_statistics
+from video.presentation import render_player_end_card
 from .video_player import format_timestamp
 
 
@@ -30,51 +30,12 @@ def card_values(p):
 
 
 def render_stat_card(path, report):
-    """Draw a readable shareable card; never capture the user's desktop."""
-    width, height = 1800, 850
-    image = QImage(width, height, QImage.Format.Format_ARGB32)
-    image.fill(QColor("#0d1117"))
-    painter = QPainter(image)
-    try:
-        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
-        painter.setPen(QColor("#f0f6fc"))
-        painter.setFont(QFont("Helvetica", 28, QFont.Weight.Bold))
-        painter.drawText(44, 65, "ROUNDNET · PLAYER STATISTICS")
-        painter.setFont(QFont("Helvetica", 16))
-        coverage = report["coverage"]
-        painter.drawText(44, 107, f"{coverage['complete']} / {coverage['points']} points fully logged · "
-                                  f"{coverage['partial']} drafts · {coverage['invalid']} invalid · {coverage['untagged']} untagged")
-        widths = [250, 150, 150, 165, 90, 240, 110, 150, 190]
-        painter.setFont(QFont("Helvetica", 15, QFont.Weight.Bold))
-        x = 44
-        for label, w in zip(CARD_HEADERS, widths):
-            painter.drawText(QRect(x, 150, w-10, 60), Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap, label)
-            x += w
-        for row, p in enumerate(report["players"]):
-            y = 215 + row*100
-            painter.fillRect(QRect(32, y, width-64, 92), QColor("#152b38" if p["team"] == "A" else "#272136"))
-            x = 44
-            painter.setFont(QFont("Helvetica", 18))
-            for value, w in zip(card_values(p), widths):
-                value = QFontMetrics(painter.font()).elidedText(value, Qt.TextElideMode.ElideRight, w-12)
-                painter.drawText(QRect(x, y, w-10, 65), Qt.AlignmentFlag.AlignVCenter, value)
-                x += w
-            painter.setFont(QFont("Helvetica", 13))
-            painter.drawText(44, y+80, f"{p['player_id']} · serves {p['serves_in']}/{p['serve_attempts']} · "
-                             f"put-aways {p['put_aways']}/{p['put_aways']+p['hits_returned']+p['hit_errors']} · "
-                             f"Original RPR {decimal(p['rpr']['overall'])}")
-        painter.setFont(QFont("Helvetica", 15))
-        painter.drawText(QRect(44, 642, width-88, 150), Qt.TextFlag.TextWordWrap,
-                         "Statistics cover logged events only; unchecked valid rallies still count. "
-                         "Breaks/broken are shared team figures, not individual credit. "
-                         "A dash means no known denominator or incomplete rating data. "
-                         "Original RPR is a match-performance model, not a skill ranking.")
-    finally:
-        painter.end()
-    output = QSaveFile(str(path))
-    if not output.open(QIODevice.OpenModeFlag.WriteOnly) or not image.save(output, "PNG") or not output.commit():
-        output.cancelWriting()
-        raise OSError("Could not save the stat card")
+    """Save the same final-score card that the video exporter appends."""
+    teams = report["teams"]
+    summary = {"team_a": teams["A"]["name"], "team_b": teams["B"]["name"],
+               "score_a": teams["A"]["score"], "score_b": teams["B"]["score"],
+               "player_statistics": report}
+    render_player_end_card(Path(path), 1800, 850, summary)
 
 
 class StatisticsDialog(QDialog):

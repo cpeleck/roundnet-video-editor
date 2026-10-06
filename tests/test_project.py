@@ -176,6 +176,18 @@ def test_invalid_project_cannot_replace_previous_good_snapshot(tmp_path: Path) -
     assert destination.read_bytes() == saved
 
 
+def test_starting_server_and_receiver_survive_project_save(tmp_path: Path) -> None:
+    source = tmp_path / "game.mp4"
+    source.write_bytes(b"video")
+    state = _state(source)
+    state["match_settings"].update(starting_server="B2", starting_receiver="A1")
+    saved = write_project(tmp_path / "match.json", state)
+    assert read_project(saved)["match_settings"]["starting_server"] == "B2"
+    state["match_settings"]["starting_receiver"] = "B1"
+    with pytest.raises(ValueError, match="opposite teams"):
+        validate_project(state)
+
+
 def test_interrupted_atomic_replace_leaves_previous_save_and_no_temp_file(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "game.mp4"
     source.write_bytes(b"original")

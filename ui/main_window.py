@@ -17,6 +17,8 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QKeySequence,
+    QImage,
+    QPixmap,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -192,7 +194,20 @@ class ExportDialog(QDialog):
             self.aspect_combo.addItem(label, ratio)
         self.highlights_checkbox = QCheckBox("Only export starred, enabled rallies")
         self.scoreboard_checkbox = QCheckBox("Show score from manually tagged point winners")
-        self.stats_checkbox = QCheckBox("Add a 3-second match statistics card")
+        self.stats_checkbox = QCheckBox("Add final-score and four-player end card")
+        self.stats_duration = QDoubleSpinBox()
+        self.stats_duration.setRange(1.0, 30.0)
+        self.stats_duration.setSingleStep(0.5)
+        self.stats_duration.setValue(5.0)
+        self.stats_duration.setSuffix(" seconds")
+        self.stats_duration.setEnabled(False)
+        self.stats_preview = QLabel()
+        self.stats_preview.setMinimumHeight(240)
+        self.stats_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stats_preview.hide()
+        self.stats_checkbox.toggled.connect(self.stats_duration.setEnabled)
+        self.stats_checkbox.toggled.connect(self._refresh_stats_preview)
+        self.aspect_combo.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview(self.stats_checkbox.isChecked()))
         self.notes_checkbox = QCheckBox("Show rally captions")
         self.overlay_edit = QLineEdit()
         self.overlay_edit.setPlaceholderText("Optional transparent PNG logo / branding")
@@ -210,6 +225,7 @@ class ExportDialog(QDialog):
         form.addRow("Highlights", self.highlights_checkbox)
         form.addRow("Scoreboard", self.scoreboard_checkbox)
         form.addRow("Statistics", self.stats_checkbox)
+        form.addRow("End-card duration", self.stats_duration)
         form.addRow("Captions", self.notes_checkbox)
         form.addRow("Branding", overlay_row)
 
@@ -224,8 +240,11 @@ class ExportDialog(QDialog):
         layout.addWidget(summary)
         layout.addSpacing(8)
         layout.addLayout(form)
+        layout.addWidget(self.stats_preview)
         layout.addSpacing(8)
         layout.addWidget(buttons)
+        if parent and any(getattr(r, "point_stats", {}).get("events") for r in getattr(parent, "rallies", [])):
+            self.stats_checkbox.setChecked(True)
 
     @property
     def output_path(self) -> str:
@@ -248,8 +267,26 @@ class ExportDialog(QDialog):
                 "highlights_only": self.highlights_checkbox.isChecked(),
                 "scoreboard": self.scoreboard_checkbox.isChecked(),
                 "include_stats": self.stats_checkbox.isChecked(),
+                "stats_duration": self.stats_duration.value(),
                 "include_notes": self.notes_checkbox.isChecked(),
                 "overlay_path": self.overlay_edit.text().strip() or None}
+
+    def _refresh_stats_preview(self, enabled):
+        self.stats_preview.setVisible(enabled)
+        if not enabled or self.parent() is None:
+            return
+        from video.presentation import crop_dimensions, match_statistics, render_player_end_card_image
+        parent = self.parent()
+        summary = match_statistics(parent.rallies, parent.match_settings)
+        source_width = int(_metadata_value(parent.video_metadata, "width", default=960) or 960)
+        source_height = int(_metadata_value(parent.video_metadata, "height", default=540) or 540)
+        width, height = crop_dimensions(source_width, source_height, self.aspect_combo.currentData())
+        preview_scale = 960 / max(width, height)
+        width, height = max(2, round(width * preview_scale)), max(2, round(height * preview_scale))
+        frame = render_player_end_card_image(width, height, summary)
+        image = QImage(frame.data, width, height, frame.strides[0], QImage.Format.Format_BGR888).copy()
+        self.stats_preview.setPixmap(QPixmap.fromImage(image).scaled(
+            520, 290, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def _choose_overlay(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Choose Branding Image", "", "PNG image (*.png)")
@@ -817,7 +854,8 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         self.analysis_roi = None
         self.analysis_court_context = None
         self._manual_start = None
-        self.match_settings = {"team_a": "Team A", "team_b": "Team B", "initial_score_a": 0, "initial_score_b": 0}
+        self.match_settings = {"team_a": "Team A", "team_b": "Team B", "initial_score_a": 0,
+                               "initial_score_b": 0, "starting_server": "A1", "starting_receiver": "B1"}
         with QSignalBlocker(self.complete_review_checkbox):
             self.complete_review_checkbox.setChecked(False)
         self.player.load(str(candidate))
@@ -1194,7 +1232,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
             self.selected_rally_index = index
             self.restore_rally()
             return
-        self._checkpoint()
+        self._checkpoint(stats_affecting=False)
         self._replace_rally(index, enabled=enabled)
         foreground = QBrush(QColor("#e6edf3" if enabled else "#8b949e"))
         for text_column in range(1, 8):
