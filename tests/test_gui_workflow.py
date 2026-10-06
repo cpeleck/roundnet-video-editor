@@ -45,7 +45,9 @@ def window(tmp_path, monkeypatch, native_app):
         source = tmp_path / "source.mp4"
         subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i",
                         "testsrc2=size=320x180:rate=20:duration=15", "-c:v", "libx264", str(source)], check=True)
-    editor.load_video(str(source), restore_recovery=False)
+    editor.load_video(str(source), restore_recovery=False, prompt_setup=False)
+    editor.match_settings["setup_complete"] = True
+    editor._update_ui_state()
     from PySide6.QtTest import QTest
     assert editor.player.player.isAvailable(), "Qt multimedia backend is unavailable"
     for _ in range(100):
@@ -123,6 +125,119 @@ def test_native_review_recovery_and_annotation_workflow(window, tmp_path):
     app.processEvents()
     assert all(s.isEnabled() for s in editor._shortcuts)
     editor.grab().save(str(tmp_path / "editor.png"))
+
+
+def test_native_clip_outcomes_drive_score_order_and_undo(window):
+    from models import Rally
+    from models.match_flow import match_timeline
+    from models.point_stats import normalize_roster
+
+    editor, _ = window
+    editor.match_settings["players"] = [
+        {**player, "name": name} for player, name in zip(
+            normalize_roster(), ("Alex", "Blair", "Casey", "Drew"))]
+    editor.rallies = [Rally(1, 2), Rally(3, 4), Rally(5, 6), Rally(7, 8)]
+    editor.selected_rally_index = 0
+    editor._rebuild_rally_tree()
+
+    editor.classify_selected("ace")
+    assert editor.rallies[0].winner == "A"
+    assert not editor.rallies[0].point_stats
+    assert editor.selected_rally_index == 1
+    assert "1 : 0" in editor.match_score_label.text()
+    assert match_timeline(editor.rallies, editor.match_settings)[1]["server_id"] == "B1"
+
+    editor.classify_selected("redo")
+    assert editor.selected_rally_index == 2
+    assert match_timeline(editor.rallies, editor.match_settings)[2]["server_id"] == "B1"
+    editor.classify_selected("double_fault")
+    assert editor.rallies[2].winner == "A"
+    assert "2 : 0" in editor.match_score_label.text()
+
+    editor.error_player_combo.setCurrentIndex(editor.error_player_combo.findData("A1"))
+    editor.classify_selected("error")
+    assert editor.rallies[3].winner == "B"
+    assert "2 : 1" in editor.match_score_label.text()
+    editor.undo_edit()
+    assert not editor.rallies[3].classification
+    assert "2 : 0" in editor.match_score_label.text()
+    editor.redo_edit()
+    assert editor.rallies[3].classification["player_id"] == "A1"
+
+    editor.match_settings["stats_complete"] = True
+    editor.toggle_star()
+    assert editor.match_settings["stats_complete"] is True
+
+
+def test_match_setup_blocks_clip_editing_until_completed(window):
+    from models import Rally
+
+    editor, _ = window
+    editor.rallies = [Rally(1, 2)]
+    editor.selected_rally_index = 0
+    editor.match_settings["setup_complete"] = False
+    editor._rebuild_rally_tree()
+    editor._update_ui_state()
+    assert editor.match_setup_button.isEnabled()
+    assert not editor.detect_button.isEnabled()
+    assert not editor.add_button.isEnabled()
+    assert not editor.split_button.isEnabled()
+    assert not editor.rally_tree.isEnabled()
+    editor.classify_selected("ace")
+    assert not editor.rallies[0].classification
+
+
+def test_first_match_setup_collects_names_and_serving_pair(window):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QLineEdit
+
+    editor, _ = window
+    editor.match_settings["setup_complete"] = False
+    names = {"Team A": "Blue", "Team B": "Red", "Player A1": "Alex",
+             "Player A2": "Blair", "Player B1": "Casey", "Player B2": "Drew"}
+
+    def fill_setup():
+        dialog = QApplication.activeModalWidget()
+        fields = {field.placeholderText(): field for field in dialog.findChildren(QLineEdit)
+                  if field.placeholderText() in names}
+        assert set(fields) == set(names)
+        assert all(not field.text() for field in fields.values())
+        for placeholder, value in names.items():
+            fields[placeholder].setText(value)
+        starter, receiver = dialog.findChildren(QComboBox)
+        starter.setCurrentIndex(starter.findData("B2"))
+        receiver.setCurrentIndex(receiver.findData("A1"))
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Ok).click()
+
+    QTimer.singleShot(0, fill_setup)
+    editor.edit_match()
+    assert editor.match_settings["setup_complete"]
+    assert editor.match_settings["team_a"] == "Blue"
+    assert editor.match_settings["team_b"] == "Red"
+    assert [p["name"] for p in editor.match_settings["players"]] == ["Alex", "Blair", "Casey", "Drew"]
+    assert (editor.match_settings["starting_server"], editor.match_settings["starting_receiver"]) == ("B2", "A1")
+
+
+def test_later_serve_outcome_waits_for_earlier_clip(window):
+    from models import Rally
+
+    editor, _ = window
+    editor.rallies = [Rally(1, 2), Rally(3, 4)]
+    editor.selected_rally_index = 1
+    editor._rebuild_rally_tree()
+    editor._update_summary()
+    assert not editor.classification_buttons["ace"].isEnabled()
+    editor.classify_selected("ace")
+    assert editor.selected_rally_index == 0
+    assert not editor.rallies[1].classification
+    editor.classify_selected("ace")
+    assert editor.selected_rally_index == 1
+    editor.classify_selected("ace")
+    assert editor.rallies[1].winner == "B"
+    editor._select_rally(0, seek=False)
+    editor.clear_selected_classification()
+    assert editor.rallies[1].winner == ""
+    assert "provisional" in editor.match_score_label.text()
 
 
 def test_native_analysis_undo_preserves_feature_provenance(window):

@@ -21,8 +21,9 @@ has not yet been established on a labeled benchmark.
   sequence. Adjust, add, split, merge, reject, restore, and mark clips reviewed.
 - Save editable projects, recover autosaved work, and undo/redo rally edits and
   annotations. Original media is never modified.
-- Set four players and the starting server and receiver, then tap players in touch
-  order to score points and record their statistics together. Star highlights.
+- Set two teams, four players, and the starting server and receiver before editing.
+  Classify each clip with one outcome button to update the score and known player
+  statistics together. Add touch details only when you need deeper statistics.
 - Review player cards, team totals, the original
   RPR breakdown, and who aced whom; export CSV, JSON, or a PNG stat card.
 - Export original-aspect, landscape, portrait, or square MP4 videos, optionally
@@ -58,7 +59,9 @@ VideoToolbox encoding has a software H.264 fallback. No GPU is required.
 
 ## A recommended first edit
 
-1. Open a game video. Keep the original in a stable location.
+1. Open a game video. Keep the original in a stable location. Enter both teams,
+   all four players, the starting server and receiver, the initial score, and
+   the points-to-win target in **Match setup** before editing clips.
 2. Select the playing area generously enough to include the players' reach,
    excluding adjacent courts, spectators, trees, and traffic where possible.
 3. Open **Net / Serve Zones**. Choose a useful frame, mark the net, and draw the
@@ -70,7 +73,10 @@ VideoToolbox encoding has a software H.264 fallback. No GPU is required.
    rally is merely omitted from export; it is not a negative training example.
 6. Review the full recording for missed rallies before checking **I reviewed the
    whole video for missed rallies**. Leave it unchecked after partial review.
-7. Optionally tag points, star highlights, and add crop centers in **Point / Highlight**.
+7. Classify each valid clip in **Point / Highlight** as Ace, Double Fault, Service
+   Break, Sideout, Defensive Break, Defensive Hold, Error, or Redo. For Error,
+   choose the player responsible. Add touch details for percentages and RPR,
+   star highlights, and add crop centers as needed.
 8. Export a video, save correction labels, and save a named project if you want
    a portable editable copy of your work.
 
@@ -82,8 +88,9 @@ helps inspect boundaries without changing them.
 ## Project saving and recovery
 
 **File → Save Project** writes a `.roundnet.json` project containing the source
-reference, rally identities and edits, review status, tags, crop keyframes,
-player rosters and touch logs, playing-area/court setup, settings, and available diagnostic signals. It does not
+reference, rally identities and edits, review status, clip classifications,
+tags, crop keyframes, player rosters and optional touch logs,
+playing-area/court setup, settings, and available diagnostic signals. It does not
 copy the original video or embed an external learned-profile file.
 
 Changes are also autosaved to `.roundnet/recovery/` inside the application
@@ -157,29 +164,42 @@ An optional local COCO17 YOLOv8/11-style pose ONNX model can be configured throu
 
 ## Points, highlights, and presentation
 
-Point winners, outcomes, player credits, and captions are entered by you; the app
-does not automatically referee or identify players. Totals derive from those
-tags and the configured initial score. Unchecked but valid points still count
-toward the match; rejected detections do not. Unknown winners remain unscored,
-so a partially tagged match has an incomplete score. Replays do not earn points.
+The editor does not automatically referee or identify players. After match setup,
+choose one outcome for each clip. The starting pair determines the next server
+and receiver under equal serving: the opening server serves once, later servers
+serve twice, and win-by-two overtime uses one serve per turn. The point winner
+follows from the clip outcome and that serving assignment. Changing an earlier
+classification recalculates later assignments and scores. An unclassified clip
+makes later assignments provisional until you classify it. The outcome buttons
+guide you back to the earliest unresolved clip before scoring later serves.
+
+Ace, Service Break, and Defensive Hold award the serving team a point. Double
+Fault, Sideout, and Defensive Break award the receiving team a point. Error
+requires the player who made the unforced error and awards the opposing team a
+point. Redo keeps the clip but awards no point or statistics; the same server
+and receiver are assigned to the next clip. Unchecked but valid points still count
+toward the match; rejected detections do not. The configured initial score is
+included in displayed totals. An end card with unresolved outcomes labels its
+score as recorded and marks player totals that depend on those clips unknown.
 
 ### Player statistics
 
-In **Point / Highlight**, set the four names and starting server/receiver under
-**Teams / players / initial score**. Select a rally and choose **Log point**. Tap
-player buttons in touch order, then use **Ace**, **Fault**, **Error**, or **Point
-Won**. The point score and player statistics save in one step. **Undo touch**
-reverses an action inside the dialog; the main **Undo** restores a saved point.
-Detailed touch controls remain available for unusual plays and quality changes.
+In **Point / Highlight**, click the outcome for the selected clip; the editor
+records its known score and player facts together and advances to the next
+unclassified clip. **Undo** restores a saved classification. The optional touch
+dialog lets you tap players in touch order and record serve, receive, set, hit,
+and defense details. Use **Undo touch** within that dialog to reverse a touch.
 
-**Match statistics** shows serve %, aces/aced, put-away %, defensive gets,
-strong/weak sets, errors, ace/rim, breaks/broken, team totals, and a navigable
-point log. Export player CSV, full event JSON, or a shareable PNG card. Touch logs
-are saved in projects and recovery, and participate in undo/redo.
+**Match statistics** shows known counts from classified clips, team totals, and
+a navigable point log. Ace credits its inferred server and receiver; Error
+credits its named player. Serve %, put-away %, set quality, defensive gets, and
+other touch-derived values stay unknown until the needed touches are logged.
+Export player CSV, full event JSON, or a shareable PNG card. Classifications
+and optional touch logs are saved in projects and recovery and support undo/redo.
 
 The **Original RPR** tab calculates Hitting, Serving, Defense, and Efficiency
 using the published original model. It requires explicit full-match confirmation,
-complete point logs, known results, and serve/hit attempts for each rated player.
+complete touch logs, known results, and serve/hit attempts for each rated player.
 It is not a claim to reproduce later proprietary rating revisions. Player identity
 and touch quality are entered manually, not detected from video. See
 [statistics definitions and formulas](docs/statistics.md) for denominators,

@@ -113,6 +113,11 @@ def validate_project(state: dict[str, Any]) -> None:
         raise ValueError("Starting server and receiver must be on opposite teams")
     if not isinstance(match.get("stats_complete", False), bool):
         raise ValueError("Invalid statistics completeness flag")
+    if not isinstance(match.get("setup_complete", True), bool):
+        raise ValueError("Invalid match setup flag")
+    target_score = match.get("target_score", 21)
+    if isinstance(target_score, bool) or not isinstance(target_score, int) or not 2 <= target_score <= 99:
+        raise ValueError("Invalid target score")
     for key in ("initial_score_a", "initial_score_b"):
         value = match.get(key, 0)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 999:

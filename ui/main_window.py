@@ -827,7 +827,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         if path:
             self.load_video(path)
 
-    def load_video(self, path: str, *, restore_recovery: bool = True) -> bool:
+    def load_video(self, path: str, *, restore_recovery: bool = True, prompt_setup: bool = True) -> bool:
         if self._detection_worker and self._detection_worker.isRunning() or self._export_worker and self._export_worker.isRunning():
             return False
         candidate = Path(path).expanduser().resolve()
@@ -855,7 +855,8 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         self.analysis_court_context = None
         self._manual_start = None
         self.match_settings = {"team_a": "Team A", "team_b": "Team B", "initial_score_a": 0,
-                               "initial_score_b": 0, "starting_server": "A1", "starting_receiver": "B1"}
+                               "initial_score_b": 0, "starting_server": "A1", "starting_receiver": "B1",
+                               "target_score": 21, "setup_complete": False}
         with QSignalBlocker(self.complete_review_checkbox):
             self.complete_review_checkbox.setChecked(False)
         self.player.load(str(candidate))
@@ -911,6 +912,11 @@ class MainWindow(ProjectWorkflow, QMainWindow):
                         self.statusBar().showMessage("Recovered saved edits and analysis for this video", 8000)
                 except Exception as exc:
                     self.statusBar().showMessage(f"Could not restore saved edits: {exc}", 10000)
+        if prompt_setup and not self.match_settings.get("setup_complete", False):
+            self.edit_match()
+            if not self.match_settings.get("setup_complete", False):
+                self.analysis_status.setText("Complete match setup before editing")
+                self.statusBar().showMessage("Enter teams, players, first server and receiver to continue", 8000)
         return True
 
     def _fallback_probe(self, path: str) -> dict[str, Any] | None:
@@ -1172,6 +1178,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         )
 
     def _rebuild_rally_tree(self, select_index: int | None = None, *, seek: bool = False) -> None:
+        self._reconcile_classifications()
         if select_index is None:
             select_index = self.selected_rally_index
         with QSignalBlocker(self.rally_tree):
@@ -1394,15 +1401,16 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         if self._busy_editing():
             return
         from uuid import uuid4
-        if self.rallies[index].point_stats and QMessageBox.question(self, "Split Annotated Point?",
-                "Splitting clears the touch log for both pieces so statistics are not counted twice. "
-                "Undo restores the original point and its log. Continue?") != QMessageBox.StandardButton.Yes:
+        if (self.rallies[index].point_stats or self.rallies[index].classification) and QMessageBox.question(self, "Split Annotated Point?",
+                "Splitting clears the clip outcome and touch details for both pieces so points and statistics are not counted twice. "
+                "Undo restores the original point. Continue?") != QMessageBox.StandardButton.Yes:
             return
         self._checkpoint()
         original = self.rallies[index]
+        clear_tags = {"classification": {}, "winner": "", "outcome": "", "player": ""} if original.classification else {"classification": {}}
         self.rallies[index : index + 1] = (
-            replace(original, end_time=split, reviewed=False, point_stats={}),
-            replace(original, start_time=split, rally_id=uuid4().hex, winner="", outcome="", reviewed=False, serve_confidence=0.0, point_stats={}),
+            replace(original, end_time=split, reviewed=False, point_stats={}, **clear_tags),
+            replace(original, start_time=split, rally_id=uuid4().hex, winner="", outcome="", player="", reviewed=False, serve_confidence=0.0, point_stats={}, classification={}),
         )
         self.selected_rally_index = index + 1
         self._rebuild_rally_tree(index + 1, seek=False)
@@ -1419,10 +1427,9 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         if left.rejected or right.rejected:
             self.statusBar().showMessage("Restore a rejected candidate before merging it", 5000)
             return
-        if right.winner or right.outcome or right.player or right.note or left.point_stats or right.point_stats:
+        if right.winner or right.outcome or right.player or right.note or left.point_stats or right.point_stats or left.classification or right.classification:
             if QMessageBox.question(self, "Merge Point Annotations?",
-                    "Merging makes these clips one point. The earlier point's tags are retained, "
-                    "and the later point's tags are removed. Touch logs are cleared to avoid combining two points' statistics. "
+                    "Merging makes these clips one point. Clip outcomes and touch details are cleared, while older manual tags from the earlier point are retained. "
                     "You can undo this. Continue?") != QMessageBox.StandardButton.Yes:
                 return
         first = _rally_values(self.rallies[left_index])
@@ -1432,11 +1439,12 @@ class MainWindow(ProjectWorkflow, QMainWindow):
             _serve_confidence(self.rallies[left_index + 1]),
         )
         self._checkpoint()
+        clear_tags = {"classification": {}, "winner": "", "outcome": "", "player": ""} if left.classification or right.classification else {"classification": {}}
         merged = replace(self.rallies[left_index], start_time=min(first[0], second[0]),
                          end_time=max(first[1], second[1]), confidence=max(first[2], second[2]),
                          enabled=first[3] or second[3], rejected=False, reviewed=False, point_stats={},
                          serve_confidence=merged_serve_confidence, starred=left.starred or right.starred,
-                         crop_keyframes=sorted({k["time"]: k for k in [*left.crop_keyframes, *right.crop_keyframes]}.values(), key=lambda k: k["time"]))
+                         crop_keyframes=sorted({k["time"]: k for k in [*left.crop_keyframes, *right.crop_keyframes]}.values(), key=lambda k: k["time"]), **clear_tags)
         self.rallies[left_index : left_index + 2] = [merged]
         self.selected_rally_index = left_index
         self._rebuild_rally_tree(left_index, seek=False)
@@ -1457,6 +1465,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
 
     # --------------------------------------------------------------- summaries
     def _update_summary(self) -> None:
+        self._reconcile_classifications()
         self._update_match_score()
         enabled = self._enabled_rallies()
         play_time = sum(self._rally_duration(rally) for rally in enabled)
@@ -1474,25 +1483,26 @@ class MainWindow(ProjectWorkflow, QMainWindow):
         analyzing = bool(self._detection_worker and self._detection_worker.isRunning())
         exporting = bool(self._export_worker and self._export_worker.isRunning())
         busy = analyzing or exporting
+        match_ready = bool(self.match_settings.get("setup_complete", True))
         has_selection = 0 <= self.selected_rally_index < len(self.rallies)
         enabled_count = len(self._enabled_rallies())
-        self.roi_button.setEnabled(has_video and not busy)
-        self.court_button.setEnabled(has_video and not busy)
-        self.detect_button.setEnabled(has_video and not analyzing and not exporting)
+        self.roi_button.setEnabled(has_video and match_ready and not busy)
+        self.court_button.setEnabled(has_video and match_ready and not busy)
+        self.detect_button.setEnabled(has_video and match_ready and not busy)
         self.settings_button.setEnabled(not busy)
         self.open_button.setEnabled(not analyzing and not exporting)
         self.open_action.setEnabled(not analyzing and not exporting)
-        can_export = has_video and enabled_count > 0 and not analyzing and not exporting
+        can_export = has_video and match_ready and enabled_count > 0 and not busy
         self.export_button.setEnabled(can_export)
         self.export_action.setEnabled(can_export)
-        self.labels_action.setEnabled(has_video and not busy)
-        self.save_labels_button.setEnabled(has_video and not busy)
-        self.add_button.setEnabled(has_video and not busy)
-        self.delete_button.setEnabled(has_selection and not busy)
-        self.split_button.setEnabled(has_selection and not busy)
-        self.merge_button.setEnabled(has_selection and len(self.rallies) > 1 and not busy)
-        self.rally_tree.setEnabled(not busy)
-        self.preview_button.setEnabled(has_selection)
+        self.labels_action.setEnabled(has_video and match_ready and not busy)
+        self.save_labels_button.setEnabled(has_video and match_ready and not busy)
+        self.add_button.setEnabled(has_video and match_ready and not busy)
+        self.delete_button.setEnabled(has_selection and match_ready and not busy)
+        self.split_button.setEnabled(has_selection and match_ready and not busy)
+        self.merge_button.setEnabled(has_selection and match_ready and len(self.rallies) > 1 and not busy)
+        self.rally_tree.setEnabled(match_ready and not busy)
+        self.preview_button.setEnabled(has_selection and match_ready)
         for control in (
             self.start_spin,
             self.end_spin,
@@ -1504,7 +1514,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
             self.end_playhead_button,
             self.apply_times_button,
         ):
-            control.setEnabled(has_selection and not busy)
+            control.setEnabled(has_selection and match_ready and not busy)
         self._set_time_spin_ranges()
         self._update_workflow_state()
 
@@ -1536,7 +1546,7 @@ class MainWindow(ProjectWorkflow, QMainWindow):
 
     # ------------------------------------------------------------------ export
     def show_export_dialog(self) -> None:
-        if not self.video_path:
+        if not self.video_path or not self.match_settings.get("setup_complete", False):
             return
         enabled = self._enabled_rallies()
         if not enabled:

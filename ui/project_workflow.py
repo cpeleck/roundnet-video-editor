@@ -13,10 +13,12 @@ from PySide6.QtCore import QSignalBlocker, QTimer, Qt
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from models import Rally
+from models.match_flow import CLASSIFICATIONS, match_timeline, normalize_classification
+from models.point_stats import normalize_roster
 from models.project import EditHistory, read_project, recovery_path, source_matches, write_project
 
 
@@ -33,7 +35,8 @@ class ProjectWorkflow:
         self.court_context = None
         self.match_settings = {"team_a": "Team A", "team_b": "Team B",
                                "initial_score_a": 0, "initial_score_b": 0,
-                               "starting_server": "A1", "starting_receiver": "B1"}
+                               "starting_server": "A1", "starting_receiver": "B1",
+                               "target_score": 21, "setup_complete": False}
         self.project_path = None
         self._history = EditHistory()
         self._restoring = False
@@ -122,10 +125,12 @@ class ProjectWorkflow:
         self.player_edit.setPlaceholderText("Player credited (optional)")
         self.note_edit = QLineEdit()
         self.note_edit.setPlaceholderText("Call or caption, e.g. OOB")
-        save = QPushButton("Save manual tag / caption")
+        save = QPushButton("Save older manual tag")
         save.clicked.connect(self.apply_point_tag)
+        self.manual_tag_save_button = save
         row2 = QHBoxLayout()
-        setup = QPushButton("Teams / players / initial score…")
+        setup = QPushButton("Match setup: teams, players, first serve…")
+        self.match_setup_button = setup
         setup.clicked.connect(self.edit_match)
         stats = QPushButton("Match statistics")
         stats.clicked.connect(self.show_match_statistics)
@@ -135,20 +140,54 @@ class ProjectWorkflow:
         self.match_score_label = QLabel("Team A  0 : 0  Team B")
         self.match_score_label.setWordWrap(True)
         form.addRow(self.match_score_label)
-        self.touch_stats_button = QPushButton("Log point · tap players in touch order…")
+        self.assignment_label = QLabel("Set up the match to see the next server and receiver")
+        self.assignment_label.setWordWrap(True)
+        form.addRow(self.assignment_label)
+        classification_grid = QGridLayout()
+        self.classification_buttons = {}
+        for position, (kind, details) in enumerate(CLASSIFICATIONS.items()):
+            button = QPushButton(details["label"])
+            button.setToolTip(details["description"])
+            button.clicked.connect(lambda checked=False, selected=kind: self.classify_selected(selected))
+            self.classification_buttons[kind] = button
+            classification_grid.addWidget(button, position // 2, position % 2)
+        form.addRow(classification_grid)
+        self.error_player_combo = QComboBox()
+        self.error_player_combo.addItem("Choose player responsible for Error", "")
+        form.addRow("Error by", self.error_player_combo)
+        self.classification_status = QLabel("Choose one outcome to score this clip and advance to the next.")
+        self.classification_status.setWordWrap(True)
+        form.addRow(self.classification_status)
+        self.last_classification_label = QLabel("")
+        self.last_classification_label.setWordWrap(True)
+        self.last_classification_label.setStyleSheet("color: #9bd8a7; font-weight: 600")
+        form.addRow(self.last_classification_label)
+        clear_classification = QPushButton("Clear clip outcome")
+        clear_classification.clicked.connect(self.clear_selected_classification)
+        self.clear_classification_button = clear_classification
+        form.addRow(clear_classification)
+        self.touch_stats_button = QPushButton("Optional touch details for percentages / RPR…")
         self.touch_stats_button.clicked.connect(self.edit_point_statistics)
         form.addRow(self.touch_stats_button)
         self.touch_stats_status = QLabel("No touch statistics recorded")
         self.touch_stats_status.setWordWrap(True)
         form.addRow(self.touch_stats_status)
-        legacy = QLabel("For new scoring, use Log point above. These manual tags also edit older projects.")
-        legacy.setWordWrap(True)
-        form.addRow(legacy)
-        form.addRow("Point winner", self.winner_combo)
-        form.addRow("Outcome", self.outcome_combo)
-        form.addRow("Player", self.player_edit)
         form.addRow("Caption", self.note_edit)
-        form.addRow(save)
+        self.save_caption_button = QPushButton("Save caption")
+        self.save_caption_button.clicked.connect(lambda: self._set_selected(note=self.note_edit.text().strip()))
+        form.addRow(self.save_caption_button)
+        legacy_toggle = QCheckBox("Older manual tags")
+        legacy_toggle.setToolTip("Use this for projects created before clip outcome buttons were added")
+        legacy_panel = QWidget()
+        legacy_form = QFormLayout(legacy_panel)
+        legacy_form.addRow("Point winner", self.winner_combo)
+        legacy_form.addRow("Outcome", self.outcome_combo)
+        legacy_form.addRow("Player", self.player_edit)
+        legacy_form.addRow(save)
+        legacy_panel.setVisible(False)
+        legacy_toggle.toggled.connect(legacy_panel.setVisible)
+        form.addRow(legacy_toggle)
+        form.addRow(legacy_panel)
         crop = QPushButton("Set assisted crop keyframes…")
         crop.clicked.connect(self.edit_crop)
         form.addRow(crop)
@@ -203,6 +242,7 @@ class ProjectWorkflow:
             self._rebuild_rally_tree()
             self._update_summary()
             self._update_ui_state()
+            self.last_classification_label.setText("Score and serving assignments refreshed from the saved clips.")
         finally:
             self._restoring = was_restoring
         self._changed()
@@ -299,7 +339,7 @@ class ProjectWorkflow:
             self._open_project_path(path, explicit=True)
 
     def _open_project_path(self, path, *, explicit=False):
-        if self._busy_editing():
+        if self._detection_worker and self._detection_worker.isRunning() or self._export_worker and self._export_worker.isRunning():
             return
         try:
             state = read_project(path)
@@ -327,9 +367,12 @@ class ProjectWorkflow:
                 state["initial_predictions"] = []
                 state["rejected_detections"] = []
                 state["complete"] = False
-                state["rallies"] = [{**r, "reviewed": False, "point_stats": {}} for r in state.get("rallies", [])]
+                state["rallies"] = [
+                    {**r, "reviewed": False, "point_stats": {}, "classification": {},
+                     **({"winner": "", "outcome": "", "player": ""} if r.get("classification") else {})}
+                    for r in state.get("rallies", [])]
                 state.setdefault("match_settings", {})["stats_complete"] = False
-            if not self.load_video(state["video_path"], restore_recovery=False):
+            if not self.load_video(state["video_path"], restore_recovery=False, prompt_setup=False):
                 return
             if any(r["end_time"] > self.video_duration + .05 for r in state.get("rallies", [])):
                 raise ValueError("Saved cuts extend beyond this recording. Locate the original source video.")
@@ -353,7 +396,9 @@ class ProjectWorkflow:
             self.roi = tuple(state["roi"]) if state.get("roi") else None
             self.court_context = state.get("court_context")
             self.detection_settings.update(state.get("settings", {}))
-            self.match_settings.update(state.get("match_settings", {}))
+            saved_match = state.get("match_settings", {})
+            self.match_settings.update(saved_match)
+            self.match_settings["setup_complete"] = saved_match.get("setup_complete", True)
             self.profile_path = state.get("profile_path", "")
             self._restore_analysis(state)
             self._restore_edit({"rallies": state.get("rallies", []),
@@ -425,7 +470,8 @@ class ProjectWorkflow:
 
     def _busy_editing(self):
         return bool(self._detection_worker and self._detection_worker.isRunning()
-                    or self._export_worker and self._export_worker.isRunning())
+                    or self._export_worker and self._export_worker.isRunning()
+                    or self.video_path and not self.match_settings.get("setup_complete", True))
 
     def restore_rally(self):
         rally = self._selected()
@@ -450,6 +496,10 @@ class ProjectWorkflow:
     def apply_point_tag(self):
         winner = self.winner_combo.currentData()
         outcome = self.outcome_combo.currentText()
+        existing_rally = self._selected()
+        if existing_rally and existing_rally.classification and (winner != existing_rally.winner or outcome != existing_rally.outcome):
+            QMessageBox.warning(self, "Use the outcome buttons", "This clip is classified. Choose an outcome above to change its score, or clear the classification first.")
+            return
         if outcome == "Replay / no point":
             winner = ""
         player_name = self.player_edit.text().strip()
@@ -481,15 +531,150 @@ class ProjectWorkflow:
                                       "complete": True, "events": [new_event(server, "serve", "ace")]}
         self._set_selected(**changes)
 
+    def _reconcile_classifications(self):
+        """Refresh compatibility score/caption fields from canonical clip labels."""
+        if not self.rallies or not self.match_settings.get("setup_complete", False):
+            return
+        roster = {p["player_id"]: p["name"] for p in normalize_roster(self.match_settings.get("players"))}
+        for row in match_timeline(self.rallies, self.match_settings):
+            rally = self.rallies[row["index"]]
+            classification = rally.classification
+            if not classification:
+                continue
+            kind = classification["kind"]
+            actor = (classification.get("player_id") if kind == "error" else
+                     row["server_id"] if kind in ("ace", "double_fault", "service_break") else
+                     row["receiver_id"] if kind == "sideout" else "")
+            if row["provisional"] and kind != "error":
+                actor = ""
+            outcome = "Replay / no point" if kind == "redo" else CLASSIFICATIONS[kind]["label"]
+            player = roster.get(actor, "")
+            if (rally.winner, rally.outcome, rally.player) != (row["winner"], outcome, player):
+                self.rallies[row["index"]] = replace(rally, winner=row["winner"], outcome=outcome,
+                                                      player=player)
+
+    def classify_selected(self, kind):
+        rally = self._selected()
+        if not rally or rally.rejected or self._busy_editing():
+            return
+        timeline_before = match_timeline(self.rallies, self.match_settings)
+        row_before = next(row for row in timeline_before if row["index"] == self.selected_rally_index)
+        if row_before["provisional"]:
+            earlier = next((row for row in timeline_before
+                            if row["index"] != self.selected_rally_index and not row["winner"]
+                            and row["kind"] != "redo" and not self.rallies[row["index"]].rejected), None)
+            message = "Classify the earlier unresolved clip first so this server and receiver are correct."
+            self.last_classification_label.setText(message)
+            self.statusBar().showMessage(message, 8000)
+            if earlier:
+                self._select_rally(earlier["index"], seek=True)
+            return
+        player_id = self.error_player_combo.currentData() if kind == "error" else ""
+        if kind == "error" and not player_id:
+            self.classification_status.setText("Choose the player who made the unforced error, then click Error.")
+            return
+        value = normalize_classification({"version": 1, "kind": kind,
+                                          **({"player_id": player_id} if kind == "error" else {})})
+        if rally.classification == value:
+            return
+        current_index = self.selected_rally_index
+        self._checkpoint()
+        cleared_details = bool(rally.point_stats)
+        self.rallies[current_index] = replace(rally, classification=value, reviewed=True, point_stats={})
+        self._reconcile_classifications()
+        next_index = next((i for i in range(current_index + 1, len(self.rallies))
+                           if not self.rallies[i].rejected and not self.rallies[i].classification), current_index)
+        self.selected_rally_index = next_index
+        self._rebuild_rally_tree(next_index, seek=False)
+        self._update_summary()
+        self._update_ui_state()
+        self._changed()
+        timeline = match_timeline(self.rallies, self.match_settings)
+        row = next(item for item in timeline if item["index"] == current_index)
+        names = {p["player_id"]: p["name"] for p in normalize_roster(self.match_settings.get("players"))}
+        if kind == "redo":
+            credit = "No point or player statistics; serving assignment repeats."
+        else:
+            team_name = self.match_settings[f"team_{row['winner'].lower()}"]
+            credit = f"{team_name} +1 point."
+            if kind == "ace":
+                credit += f" {names[row['server_id']]} +1 ace; {names[row['receiver_id']]} +1 aced."
+            elif kind == "double_fault":
+                credit += f" {names[row['server_id']]} +1 double fault (two service errors)."
+            elif kind == "error":
+                credit += f" {names[player_id]} +1 unforced error."
+        next_row = next((item for item in timeline if item["index"] == next_index), None)
+        next_serve = (" Next clip: " + names[next_row["server_id"]] + " serves to "
+                      + names[next_row["receiver_id"]] + "."
+                      if next_index != current_index and next_row else "")
+        message = f"{CLASSIFICATIONS[kind]['label']}: {credit}{next_serve}"
+        if cleared_details:
+            message += " Earlier touch details cleared; Undo restores them."
+        self.last_classification_label.setText(message)
+        self.statusBar().showMessage(message, 8000)
+
+    def clear_selected_classification(self):
+        rally = self._selected()
+        if not rally or not rally.classification or self._busy_editing():
+            return
+        self._checkpoint()
+        self.rallies[self.selected_rally_index] = replace(rally, classification={}, winner="", outcome="", player="", point_stats={}, reviewed=False)
+        self._reconcile_classifications()
+        self._rebuild_rally_tree(self.selected_rally_index, seek=False)
+        self._update_summary()
+        self._update_ui_state()
+        self._changed()
+        self.last_classification_label.setText("Outcome cleared. This clip and later serving assignments are provisional until it is classified.")
+        self.statusBar().showMessage("Outcome and any touch details cleared; Undo restores them", 6000)
+
     def _load_point_panel(self):
         rally = self._selected()
         if not hasattr(self, "winner_combo"):
             return
         for widget in (self.winner_combo, self.outcome_combo, self.player_edit, self.note_edit,
-                       self.star_button, self.reviewed_button, self.touch_stats_button):
+                       self.star_button, self.reviewed_button, self.touch_stats_button,
+                       self.save_caption_button, self.manual_tag_save_button,
+                       self.error_player_combo, self.clear_classification_button,
+                       *self.classification_buttons.values()):
             widget.setEnabled(rally is not None and not self._busy_editing())
+        if rally and rally.classification:
+            for widget in (self.winner_combo, self.outcome_combo, self.player_edit, self.manual_tag_save_button):
+                widget.setEnabled(False)
+        current_error = self.error_player_combo.currentData()
+        self.error_player_combo.clear()
+        self.error_player_combo.addItem("Choose player responsible for Error", "")
+        for player in normalize_roster(self.match_settings.get("players")):
+            self.error_player_combo.addItem(f"{player['name']} · {player['player_id']}", player["player_id"])
+        self.error_player_combo.setCurrentIndex(max(0, self.error_player_combo.findData(current_error)))
         if rally:
             self.touch_stats_button.setEnabled(not rally.rejected and not self._busy_editing())
+            self.clear_classification_button.setEnabled(bool(rally.classification) and not self._busy_editing())
+            if rally.classification.get("kind") == "error":
+                self.error_player_combo.setCurrentIndex(self.error_player_combo.findData(rally.classification["player_id"]))
+            for kind, button in self.classification_buttons.items():
+                button.setEnabled(not rally.rejected and not self._busy_editing())
+                button.setStyleSheet("background: #1f6feb; font-weight: bold" if rally.classification.get("kind") == kind else "")
+            rows = match_timeline(self.rallies, self.match_settings)
+            assignment = next((row for row in rows if row["index"] == self.selected_rally_index), None)
+            names = {p["player_id"]: p["name"] for p in normalize_roster(self.match_settings.get("players"))}
+            if assignment:
+                a, b = assignment["score_before"]
+                server_id, receiver_id = assignment["server_id"], assignment["receiver_id"]
+                server_partner = server_id[0] + ("2" if server_id[1] == "1" else "1")
+                receiver_partner = receiver_id[0] + ("2" if receiver_id[1] == "1" else "1")
+                self.assignment_label.setText(
+                    f"Point {assignment['scored_index'] + 1} · {self.match_settings['team_a']} {a} : {b} {self.match_settings['team_b']}\n"
+                    f"Serving: {names[server_id]} · partner {names[server_partner]}\n"
+                    f"Receiving: {names[receiver_id]} · partner {names[receiver_partner]}"
+                    + (" · provisional until earlier clips are classified" if assignment["provisional"] else ""))
+                if assignment["provisional"]:
+                    for button in self.classification_buttons.values():
+                        button.setEnabled(False)
+            self.classification_status.setText(
+                "Classify earlier unresolved clips first; this serving assignment may change."
+                if assignment and assignment["provisional"] else
+                CLASSIFICATIONS[rally.classification["kind"]]["description"] if rally.classification else
+                "Choose one outcome to score this clip and advance to the next.")
             self.winner_combo.setCurrentIndex(max(0, self.winner_combo.findData(rally.winner)))
             self.outcome_combo.setCurrentText(rally.outcome)
             self.player_edit.setText(rally.player)
@@ -504,6 +689,8 @@ class ProjectWorkflow:
                 f"{len(stats.get('events', []))} events · {'Complete point' if stats.get('complete') else 'Draft / untagged'}")
         else:
             self.touch_stats_status.setText("Select a rally to record its touches")
+            self.assignment_label.setText("Select a clip to see its server and receiver")
+            self.classification_status.setText("Choose one outcome after selecting a clip")
 
     def edit_point_statistics(self):
         rally = self._selected()
@@ -511,26 +698,38 @@ class ProjectWorkflow:
             return
         from .point_statistics import PointStatisticsDialog
         self.player.pause()
-        dialog = PointStatisticsDialog(self.video_path, rally, self.match_settings, self)
+        row = next((item for item in match_timeline(self.rallies, self.match_settings)
+                    if item["index"] == self.selected_rally_index), None)
+        point_settings = dict(self.match_settings)
+        if row:
+            point_settings.update(starting_server=row["server_id"], starting_receiver=row["receiver_id"])
+        dialog = PointStatisticsDialog(self.video_path, rally, point_settings, self)
         try:
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                outcome = "Replay / no point" if dialog.replay else "" if rally.outcome == "Replay / no point" else rally.outcome
-                self._set_selected(point_stats=dialog.point, winner=dialog.winner, outcome=outcome, reviewed=True)
+                if rally.classification:
+                    self._set_selected(point_stats=dialog.point, reviewed=True)
+                else:
+                    outcome = "Replay / no point" if dialog.replay else "" if rally.outcome == "Replay / no point" else rally.outcome
+                    self._set_selected(point_stats=dialog.point, winner=dialog.winner, outcome=outcome, reviewed=True)
         finally:
             dialog.video.unload()
             dialog.deleteLater()
 
     def edit_match(self):
-        if self._busy_editing():
+        if self._detection_worker and self._detection_worker.isRunning() or self._export_worker and self._export_worker.isRunning():
             return
+        first_setup = not self.match_settings.get("setup_complete", False)
         dialog = QDialog(self)
-        dialog.setWindowTitle("Teams, Players, and Initial Score")
+        dialog.setWindowTitle("Match setup")
         layout = QFormLayout(dialog)
         controls = {}
         for key, label in (("team_a", "Team A"), ("team_b", "Team B"),
                             ("initial_score_a", "Initial score A"), ("initial_score_b", "Initial score B")):
             if key.startswith("team"):
-                control = QLineEdit(str(self.match_settings[key]))
+                default_name = "Team A" if key == "team_a" else "Team B"
+                control = QLineEdit("" if first_setup and self.match_settings[key] == default_name
+                                    else str(self.match_settings[key]))
+                control.setPlaceholderText(default_name)
                 control.setMaxLength(100)
             else:
                 control = QSpinBox()
@@ -542,7 +741,9 @@ class ProjectWorkflow:
         roster = normalize_roster(self.match_settings.get("players"))
         player_controls = {}
         for player in roster:
-            name = QLineEdit(player["name"])
+            default_name = f"Player {player['player_id']}"
+            name = QLineEdit("" if first_setup and player["name"] == default_name else player["name"])
+            name.setPlaceholderText(default_name)
             name.setMaxLength(80)
             player_controls[player["player_id"]] = name
             layout.addRow(f"Player {player['player_id']}", name)
@@ -551,10 +752,23 @@ class ProjectWorkflow:
         for p in roster:
             for combo in (starter, receiver):
                 combo.addItem(f"{p['name']} · {p['player_id']}", p["player_id"])
+        def update_roster_choices():
+            for player in roster:
+                pid = player["player_id"]
+                label = player_controls[pid].text().strip() or pid
+                for combo in (starter, receiver):
+                    combo.setItemText(combo.findData(pid), f"{label} · {pid}")
+        for control in player_controls.values():
+            control.textChanged.connect(lambda *_: update_roster_choices())
+        update_roster_choices()
         starter.setCurrentIndex(max(0, starter.findData(self.match_settings.get("starting_server", "A1"))))
         receiver.setCurrentIndex(max(0, receiver.findData(self.match_settings.get("starting_receiver", "B1"))))
         layout.addRow("Starting server", starter)
         layout.addRow("Starting receiver", receiver)
+        target_score = QSpinBox()
+        target_score.setRange(2, 99)
+        target_score.setValue(int(self.match_settings.get("target_score", 21)))
+        layout.addRow("Points to win", target_score)
         note = QLabel("Player slots stay stable when names change, so past touch credits follow the rename.")
         note.setWordWrap(True)
         layout.addRow(note)
@@ -562,6 +776,11 @@ class ProjectWorkflow:
         def validate_roster_and_accept():
             try:
                 normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
+                if first_setup:
+                    if any(player_controls[p["player_id"]].text().strip() == f"Player {p['player_id']}" for p in roster):
+                        raise ValueError("Enter a name for each of the four players before editing")
+                    if not controls["team_a"].text().strip() or not controls["team_b"].text().strip():
+                        raise ValueError("Enter both team names before editing")
                 if starter.currentData()[0] == receiver.currentData()[0]:
                     raise ValueError("Starting server and receiver must be on opposite teams")
                 dialog.accept()
@@ -573,13 +792,21 @@ class ProjectWorkflow:
         if dialog.exec() == QDialog.DialogCode.Accepted:
             score_changed = any(controls[key].value() != self.match_settings[key]
                                 for key in ("initial_score_a", "initial_score_b"))
-            self._checkpoint(stats_affecting=score_changed)
+            order_changed = (starter.currentData() != self.match_settings.get("starting_server")
+                             or receiver.currentData() != self.match_settings.get("starting_receiver")
+                             or target_score.value() != self.match_settings.get("target_score", 21))
+            if self.match_settings.get("setup_complete", False):
+                self._checkpoint(stats_affecting=score_changed or order_changed)
             self.match_settings.update({key: (value.text().strip() or ("Team A" if key == "team_a" else "Team B")) if key.startswith("team") else value.value()
                                         for key, value in controls.items()})
             self.match_settings["players"] = normalize_roster([{**p, "name": player_controls[p["player_id"]].text()} for p in roster])
             self.match_settings["starting_server"] = starter.currentData()
             self.match_settings["starting_receiver"] = receiver.currentData()
+            self.match_settings["target_score"] = target_score.value()
+            self.match_settings["setup_complete"] = True
+            self._reconcile_classifications()
             self._update_summary()
+            self._update_ui_state()
             self._changed()
 
     def _update_match_score(self):
@@ -588,7 +815,12 @@ class ProjectWorkflow:
         points = [r for r in self.rallies if not r.rejected and r.outcome != "Replay / no point"]
         a = self.match_settings["initial_score_a"] + sum(r.winner == "A" for r in points)
         b = self.match_settings["initial_score_b"] + sum(r.winner == "B" for r in points)
-        self.match_score_label.setText(f"{self.match_settings['team_a']}  {a} : {b}  {self.match_settings['team_b']}")
+        rows = match_timeline(self.rallies, self.match_settings)
+        provisional = any(row["provisional"] or (not row["winner"] and row["kind"] != "redo"
+                          and not self.rallies[row["index"]].rejected
+                          and self.rallies[row["index"]].outcome != "Replay / no point") for row in rows)
+        suffix = " · provisional until every clip is classified" if provisional else ""
+        self.match_score_label.setText(f"{self.match_settings['team_a']}  {a} : {b}  {self.match_settings['team_b']}{suffix}")
 
     def show_match_statistics(self):
         if self._busy_editing():
@@ -710,11 +942,14 @@ class ProjectWorkflow:
         if not hasattr(self, "undo_action"):
             return
         busy = self._busy_editing()
+        processing = bool(self._detection_worker and self._detection_worker.isRunning()
+                          or self._export_worker and self._export_worker.isRunning())
+        self.match_setup_button.setEnabled(bool(self.video_path) and not processing)
         self.undo_action.setEnabled(not busy and bool(self._history.undo_stack))
         self.redo_action.setEnabled(not busy and bool(self._history.redo_stack))
         self.restore_action.setEnabled(not busy and self._selected() is not None)
-        for action in (self.open_project_action, self.import_decisions_action):
-            action.setEnabled(not busy and not (self._export_worker and self._export_worker.isRunning()))
+        self.open_project_action.setEnabled(not processing)
+        self.import_decisions_action.setEnabled(not busy)
         self.save_project_action.setEnabled(bool(self.video_path) and not busy)
         self.decisions_action.setEnabled(bool(self.video_path) and not busy)
         self.import_decisions_action.setEnabled(bool(self.video_path) and not busy)

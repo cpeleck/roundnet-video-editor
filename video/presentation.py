@@ -28,6 +28,8 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         "initial_score_b": 0, "overlay_path": None, "include_stats": False,
         "include_notes": False,
         "players": None, "stats_complete": False, "stats_duration": 5.0,
+        "starting_server": "A1", "starting_receiver": "B1", "target_score": 21,
+        "setup_complete": True,
     }
     if options:
         unknown = set(options) - set(result)
@@ -36,9 +38,11 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         result.update(options)
     if result["aspect_ratio"] not in {"source", "16:9", "9:16", "1:1"}:
         raise ValueError("aspect_ratio must be source, 16:9, 9:16, or 1:1")
-    for name in ("highlights_only", "scoreboard", "include_stats", "include_notes", "stats_complete"):
+    for name in ("highlights_only", "scoreboard", "include_stats", "include_notes", "stats_complete", "setup_complete"):
         if not isinstance(result[name], bool):
             raise ValueError(f"{name} must be a boolean")
+    if isinstance(result["target_score"], bool) or not isinstance(result["target_score"], int) or not 2 <= result["target_score"] <= 99:
+        raise ValueError("target_score must be between 2 and 99")
     duration = result["stats_duration"]
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 1 <= duration <= 30:
         raise ValueError("stats_duration must be between 1 and 30 seconds")
@@ -59,7 +63,10 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         if cv2.imread(str(overlay), cv2.IMREAD_UNCHANGED) is None:
             raise ValueError("The custom overlay could not be decoded as a PNG")
         result["overlay_path"] = str(overlay)
-    from models.point_stats import normalize_roster
+    from models.point_stats import PLAYER_IDS, normalize_roster
+    server, receiver = result["starting_server"], result["starting_receiver"]
+    if server not in PLAYER_IDS or receiver not in PLAYER_IDS or server[0] == receiver[0]:
+        raise ValueError("Starting server and receiver must be on opposite teams")
     if result["players"] is not None:
         result["players"] = normalize_roster(result["players"])
     return result
@@ -67,32 +74,38 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
 
 def scores_before_rallies(rallies: Sequence[object], options: Mapping[str, Any]) -> dict[int, tuple[int, int]]:
     """Map original list indices to the score immediately before each point."""
-    a, b = options["initial_score_a"], options["initial_score_b"]
-    scores: dict[int, tuple[int, int]] = {}
-    def start(item: object) -> float:
-        if isinstance(item, (tuple, list)) and len(item) == 2:
-            return float(item[0])
-        return float(field(item, "start_time", field(item, "start", 0)))
-    for index, rally in sorted(enumerate(rallies), key=lambda pair: (start(pair[1]), pair[0])):
-        scores[index] = (a, b)
-        if field(rally, "rejected", False) or field(rally, "outcome", "") == "Replay / no point":
-            continue
-        winner = field(rally, "winner", "")
-        a += int(winner == "A")
-        b += int(winner == "B")
-    return scores
+    from models.match_flow import match_timeline
+    return {row["index"]: row["score_before"] for row in match_timeline(list(rallies), options)}
 
 
 def match_statistics(rallies: Iterable[object], options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Summarize tagged points, including points omitted from the exported cut."""
     opts = prepare_export_options(options)
     rallies = list(rallies)
-    valid = [item for item in rallies if not field(item, "rejected", False)
-             and field(item, "outcome", "") != "Replay / no point"]
-    outcomes = Counter(str(field(item, "outcome", "")) for item in valid if field(item, "outcome", ""))
-    players = Counter(str(field(item, "player", "")) for item in valid if field(item, "player", ""))
-    wins_a = sum(field(item, "winner", "") == "A" for item in valid)
-    wins_b = sum(field(item, "winner", "") == "B" for item in valid)
+    from models.match_flow import CLASSIFICATIONS, match_timeline
+    from models.point_stats import normalize_roster
+    rows = match_timeline(rallies, opts)
+    valid = [row for row in rows if not field(rallies[row["index"]], "rejected", False)
+             and row["kind"] != "redo"
+             and not (not row["kind"] and field(rallies[row["index"]], "outcome", "") == "Replay / no point")]
+    names = {player["player_id"]: player["name"] for player in normalize_roster(opts.get("players"))}
+    outcomes = Counter(
+        CLASSIFICATIONS[row["kind"]]["label"] if row["kind"] else str(field(rallies[row["index"]], "outcome", ""))
+        for row in valid if row["kind"] or field(rallies[row["index"]], "outcome", ""))
+    players = Counter()
+    for row in valid:
+        rally = rallies[row["index"]]
+        kind = row["kind"]
+        actor = (field(rally, "classification", {}).get("player_id") if kind == "error" else
+                 row["server_id"] if kind in {"ace", "double_fault", "service_break"} else
+                 row["receiver_id"] if kind == "sideout" else "")
+        if row["provisional"] and kind != "error":
+            actor = ""
+        label = names.get(actor, "") if kind else str(field(rally, "player", ""))
+        if label:
+            players[label] += 1
+    wins_a = sum(row["winner"] == "A" for row in valid)
+    wins_b = sum(row["winner"] == "B" for row in valid)
     from models.statistics import calculate_statistics
     detailed = calculate_statistics(rallies, opts)
     return {
@@ -101,7 +114,7 @@ def match_statistics(rallies: Iterable[object], options: Mapping[str, Any] | Non
         "score_a": opts["initial_score_a"] + wins_a,
         "score_b": opts["initial_score_b"] + wins_b,
         "team_a": opts["team_a"], "team_b": opts["team_b"],
-        "highlights": sum(bool(field(item, "starred", False)) for item in valid),
+        "highlights": sum(bool(field(rallies[row["index"]], "starred", False)) for row in valid),
         "outcomes": dict(outcomes), "player_tags": dict(players),
         "player_statistics": detailed,
     }
@@ -231,18 +244,25 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
                     font_size, color, max(1, round(weight * scale)), cv2.LINE_AA)
     detail = summary["player_statistics"]
     players = detail["players"]
+    unresolved = int(summary.get("untagged_points", detail.get("coverage", {}).get("unresolved", 0)))
+    provisional = unresolved > 0 or bool(detail.get("provisional", False))
     rect(0, 0, 1, .18, (61, 42, 32))
-    label("FINAL SCORE", .035, .052, .9, (130, 190, 255), 2)
+    label("RECORDED SCORE" if provisional else "FINAL SCORE", .035, .052, .9, (130, 190, 255), 2)
     label(summary["team_a"], .035, .112, 1.45, max_width=.29)
     label(f"{summary['score_a']}  -  {summary['score_b']}", .395, .112, 1.75, (255, 255, 255), 3)
     label(summary["team_b"], .70, .112, 1.45, max_width=.27)
     left, top, right, bottom = .025, .205, .975, .94
-    label("PLAYER STATISTICS", left, .235, .8, (130, 190, 255), 2)
+    label("KNOWN PLAYER STATISTICS" if provisional else "PLAYER STATISTICS", left, .235, .8, (130, 190, 255), 2)
     col_left = .31
     cell_width = (right - col_left) / 4
     labels = ["Serve %", "Aces : Aced", "Put-away %", "Defensive Gets",
               "Strong : Weak Sets", "Errors", "+/-  Ace : Rim", "Breaks : Broken",
               "Hitting", "Serving", "Defense", "Efficiency", "RPR"]
+    coverage = detail["coverage"]
+    details_known = coverage["points"] > 0 and coverage["complete"] == coverage["points"]
+    outcomes_known = not provisional and all(
+        point.get("classification") or (point["point_stats"].get("complete") and not point["issues"])
+        for point in detail.get("points", []))
     def pct(value, numerator, denominator):
         return "--" if value is None else f"{value*100:.0f}% ({numerator}/{denominator})"
     def values(p):
@@ -250,9 +270,13 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
         rpr = p["rpr"]
         number = lambda key: "--" if rpr[key] is None else f"{rpr[key]:.1f}"
         return [pct(p["serve_pct"], p["serves_in"], p["serve_attempts"]),
-                f"{p['aces']} : {p['aced']}", pct(p["put_away_pct"], p["put_aways"], known_hits),
-                str(p["defensive_gets"]), f"{p['strong_sets']} : {p['weak_sets']}", str(p["errors"]),
-                f"{p['aces']} : {p['rims']}", f"{p['breaks']} : {p['broken']}",
+                f"{p['aces']} : {p['aced']}" if outcomes_known else "--",
+                pct(p["put_away_pct"], p["put_aways"], known_hits),
+                str(p["defensive_gets"]) if details_known else "--",
+                f"{p['strong_sets']} : {p['weak_sets']}" if details_known else "--",
+                str(p["errors"]) if outcomes_known else "--",
+                f"{p['aces']} : {p['rims'] if details_known else '--'}" if outcomes_known else "--",
+                f"{p['breaks']} : {p['broken']}" if outcomes_known else "--",
                 number("hitting"), number("serving"), number("defense"), number("efficiency"), number("overall")]
     if portrait:
         player_values = [values(p) for p in players]
@@ -280,8 +304,8 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
                           y + row_height * .73, .68, max_width=.24)
             rect(.445, panel_top, .448, panel_top + .37, (116, 111, 105))
             rect(.705, panel_top, .708, panel_top + .37, (116, 111, 105))
-        coverage = detail["coverage"]
-        label(f"{coverage['complete']}/{coverage['points']} points fully logged", left, .97,
+        status = f"{unresolved} outcomes unresolved  |  " if provisional else ""
+        label(status + f"{coverage['complete']}/{coverage['points']} points fully logged  |  -- = unknown until logged/classified", left, .97,
               .66, (175, 189, 199), max_width=.95)
         return canvas
     table_top = .265
@@ -309,8 +333,8 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
     for col in range(5):
         rect(col_left + col * cell_width - .0015, table_top, col_left + col * cell_width + .0015,
              bottom, (116, 111, 105))
-    coverage = detail["coverage"]
-    footer = f"{coverage['complete']}/{coverage['points']} points fully logged"
+    footer = (f"{unresolved} outcomes unresolved  |  " if provisional else "")
+    footer += f"{coverage['complete']}/{coverage['points']} points fully logged  |  -- = unknown until logged/classified"
     if not detail["rpr_eligible"]:
         footer += "  |  RPR appears after full-match confirmation and complete touch logs"
     label(footer, left, .975, .58, (175, 189, 199), max_width=.95)

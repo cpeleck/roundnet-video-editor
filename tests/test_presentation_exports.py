@@ -29,6 +29,40 @@ def test_score_counts_disabled_points_but_not_rejected_detections() -> None:
     assert [segment.source_index for segment in generate_export_segments(rallies, highlights_only=True)] == [0]
 
 
+def test_classified_outcomes_supply_export_scores_without_cached_winners() -> None:
+    from models import Rally
+
+    rallies = [
+        Rally(0, 2, classification={"version": 1, "kind": "ace"}),
+        Rally(3, 5, classification={"version": 1, "kind": "redo"}),
+        Rally(6, 8, classification={"version": 1, "kind": "double_fault"}),
+    ]
+    options = prepare_export_options()
+    assert scores_before_rallies(rallies, options) == {0: (0, 0), 1: (1, 0), 2: (1, 0)}
+    summary = match_statistics(rallies, options)
+    assert (summary["score_a"], summary["score_b"], summary["tagged_points"]) == (2, 0, 2)
+    assert summary["outcomes"] == {"Ace": 1, "Double Fault": 1}
+
+
+def test_end_card_marks_incomplete_scoring_as_recorded(monkeypatch) -> None:
+    from models import Rally
+    import video.presentation as presentation
+
+    summary = match_statistics([Rally(0, 1), Rally(2, 3, classification={"version": 1, "kind": "ace"})])
+    drawn = []
+    original = presentation.cv2.putText
+
+    def capture(frame, value, *args, **kwargs):
+        drawn.append(value)
+        return original(frame, value, *args, **kwargs)
+
+    monkeypatch.setattr(presentation.cv2, "putText", capture)
+    presentation.render_player_end_card_image(1600, 900, summary)
+    assert "RECORDED SCORE" in drawn
+    assert "FINAL SCORE" not in drawn
+    assert "KNOWN PLAYER STATISTICS" in drawn
+
+
 def test_edit_decisions_preserve_exact_source_and_output_times(tmp_path: Path) -> None:
     rallies = [{"start": 9.1234, "end": 10.4321, "starred": True, "note": "hello\nTITLE: bad"},
                {"start": 3, "end": 4, "enabled": False}, {"start": 0, "end": 1.5, "starred": True}]

@@ -32,6 +32,117 @@ def long_rally():
                   event("A2", "defense"), event("A1", "set", "strong"), event("A2", "hit")])
 
 
+def classified(start, kind, *, player_id=None, **kwargs):
+    classification = {"version": 1, "kind": kind}
+    if player_id:
+        classification["player_id"] = player_id
+    return Rally(start, start + 1, classification=classification, **kwargs)
+
+
+def test_classifications_credit_known_players_and_teams_without_touch_logs():
+    rallies = [classified(0, "ace"), classified(1, "redo", winner="B", point_stats={
+        "version": 1, "complete": True, "server_id": "B1", "receiver_id": "A2",
+        "events": [event("B1", "serve", "ace")]}),
+        classified(2, "double_fault"), classified(3, "error", player_id="A2")]
+    report = calculate_statistics(rallies, {"starting_server": "A1", "starting_receiver": "B1"})
+    assert (report["teams"]["A"]["score"], report["teams"]["B"]["score"]) == (2, 1)
+    assert report["coverage"]["points"] == 3
+    assert report["coverage"]["replays"] == 1
+    assert report["coverage"]["classified"] == 3
+    assert report["classification_counts"] == {"ace": 1, "redo": 1, "double_fault": 1, "error": 1}
+    assert [(row["server_id"], row["receiver_id"], row["winner"], row["classification"])
+            for row in report["points"]] == [
+                ("A1", "B1", "A", "ace"), ("B1", "A2", "A", "double_fault"),
+                ("B1", "A1", "B", "error")]
+    assert player(report, "A1")["aces"] == 1
+    assert player(report, "B1")["aced"] == 1
+    assert player(report, "B1")["double_faults"] == 1
+    assert player(report, "B1")["faults"] == 2
+    assert player(report, "A2")["errors"] == 1
+    assert all(player(report, identity)["points"] == 3 for identity in ("A1", "A2", "B1", "B2"))
+    assert player(report, "A1")["breaks"] == 1
+    assert player(report, "A2")["breaks"] == 0
+    assert player(report, "B1")["breaks"] == 1
+    assert player(report, "B1")["broken"] == 1
+    assert player(report, "A2")["sideouts"] == 1
+    assert all(player(report, identity)["serve_pct"] is None for identity in ("A1", "A2", "B1", "B2"))
+    assert all(player(report, identity)["rpr"]["overall"] is None for identity in ("A1", "A2", "B1", "B2"))
+    assert report["aces_by_opponent"] == [{"server_id": "A1", "receiver_id": "B1", "aces": 1}]
+    assert report["outcome_tags"] == report["player_tags"] == {}
+
+
+def test_matching_touch_details_do_not_double_count_classified_facts():
+    rallies = [classified(0, "ace", point_stats={"version": 1, "complete": True,
+               "server_id": "A1", "receiver_id": "B1", "events": [event("A1", "serve", "ace")]}),
+        classified(1, "double_fault", point_stats={"version": 1, "complete": True,
+                   "server_id": "B1", "receiver_id": "A2", "events": [
+                       event("B1", "serve", "fault"), event("B1", "serve", "rim")]}),
+        classified(2, "error", player_id="A1", point_stats={"version": 1, "complete": True,
+                   "server_id": "B1", "receiver_id": "A1", "events": [
+                       event("B1", "serve", "in"), event("A1", "receive", "error")]})]
+    report = calculate_statistics(rallies)
+    assert report["coverage"]["complete"] == 3
+    assert not report["warnings"]
+    assert player(report, "A1")["aces"] == 1
+    assert player(report, "B1")["aced"] == 1
+    assert player(report, "B1")["double_faults"] == 1
+    assert player(report, "B1")["faults"] == 2
+    assert player(report, "B1")["rims"] == 1
+    assert player(report, "A1")["errors"] == player(report, "A1")["receive_errors"] == 1
+    assert player(report, "A1")["serve_pct"] == 1
+
+
+def test_conflicting_touch_log_does_not_override_classified_ace_or_rotation():
+    rally = classified(0, "ace", point_stats={"version": 1, "complete": True,
+                      "server_id": "B1", "receiver_id": "A1", "events": [event("B1", "serve", "ace")]})
+    report = calculate_statistics([rally])
+    assert report["coverage"]["invalid"] == 1
+    assert any("inferred server" in warning for warning in report["warnings"])
+    assert player(report, "A1")["aces"] == 1
+    assert player(report, "B1")["aces"] == 0
+    assert player(report, "B1")["serve_attempts"] == 0
+    assert report["teams"]["A"]["score"] == 1
+
+
+def test_named_error_stays_with_classified_player_when_touch_log_conflicts():
+    rally = classified(0, "error", player_id="A2", point_stats={
+        "version": 1, "complete": True, "server_id": "A1", "receiver_id": "B1",
+        "events": [event("A1", "serve", "in"), event("B1", "receive", "error")]})
+    report = calculate_statistics([rally])
+    assert report["coverage"]["invalid"] == 1
+    assert any("different player" in warning for warning in report["warnings"])
+    assert player(report, "A2")["errors"] == 1
+    assert player(report, "B1")["errors"] == 0
+    assert player(report, "A1")["serve_attempts"] == 0
+    assert report["teams"]["B"]["score"] == 1
+
+
+def test_partial_classified_coverage_keeps_touch_percentages_unknown():
+    detailed = long_rally()
+    quick = classified(21, "ace")
+    report = calculate_statistics([detailed, quick], {"stats_complete": True})
+    assert report["coverage"]["complete"] == 1
+    assert player(report, "A1")["serve_pct"] is None
+    assert player(report, "A2")["put_away_pct"] is None
+    assert player(report, "A1")["break_pct"] == 1
+    assert not report["rpr_eligible"]
+
+
+def test_unresolved_earlier_clip_withholds_later_serve_based_credits():
+    rallies = [Rally(0, 1), classified(2, "ace"), classified(4, "error", player_id="A2")]
+    report = calculate_statistics(rallies)
+    assert report["provisional"]
+    assert report["coverage"]["unresolved"] == 2
+    assert (report["teams"]["A"]["score"], report["teams"]["B"]["score"]) == (0, 1)
+    assert player(report, "A1")["aces"] == 0
+    assert player(report, "B1")["aced"] == 0
+    assert player(report, "A2")["errors"] == 1
+    assert not report["aces_by_opponent"]
+    summary = match_statistics(rallies)
+    assert summary["untagged_points"] == 2
+    assert summary["player_statistics"]["provisional"]
+
+
 def test_touch_order_credits_actual_defender_and_hitter():
     r = long_rally()
     assert point_issues(r.point_stats, r.winner) == []
@@ -44,7 +155,8 @@ def test_touch_order_credits_actual_defender_and_hitter():
     assert player(report, "B1")["put_away_pct"] == 0
     assert player(report, "A2")["put_away_pct"] == 1
     assert report["teams"]["A"]["breaks"] == 1
-    assert player(report, "A1")["breaks"] == player(report, "A2")["breaks"] == 1
+    assert player(report, "A1")["breaks"] == 1
+    assert player(report, "A2")["breaks"] == 0
     assert player(report, "B1")["broken"] == 1
 
 

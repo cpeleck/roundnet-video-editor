@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 from uuid import uuid4
 
+from .match_flow import match_timeline, normalize_classification
 from .point_stats import normalize_point_stats, normalize_roster
 
 RPR_SOURCE = "https://static1.squarespace.com/static/59e6b73dccc5c588c62abdb2/t/5ef399f33b82da542e9a8f6b/1593022964651/Introducing%2BRoundnet%2BPlayer%2BRating.pdf"
@@ -153,6 +154,50 @@ def point_issues(point, winner="", *, start=None, end=None):
     return list(dict.fromkeys(issues))
 
 
+def classified_point_issues(point, classification, assignment):
+    """Check detailed evidence against a clip outcome and inferred roles."""
+    point = normalize_point_stats(point)
+    classification = normalize_classification(classification)
+    if not point or not classification:
+        return []
+    kind = classification["kind"]
+    issues = []
+    if assignment.get("provisional"):
+        issues.append("Serving order is provisional until earlier clips are classified.")
+    if point["server_id"] and point["server_id"] != assignment["server_id"]:
+        issues.append("Touch log server conflicts with the clip's inferred server.")
+    if point["receiver_id"] and point["receiver_id"] != assignment["receiver_id"]:
+        issues.append("Touch log receiver conflicts with the clip's inferred receiver.")
+    events = point["events"]
+    if events:
+        if kind == "ace" and any(e["kind"] != "serve" for e in events):
+            issues.append("An Ace cannot include rally touches after the serve.")
+        if kind == "ace" and any(e["kind"] == "serve" and e["result"] == "ace"
+                                 and e["player_id"] != assignment["server_id"] for e in events):
+            issues.append("Touch log Ace belongs to a different server.")
+        if kind == "ace" and any(e["kind"] == "serve" and e["result"] == "in" for e in events):
+            issues.append("An Ace cannot also contain a returned in-play serve.")
+        if kind == "double_fault" and any(e["kind"] != "serve" or e["result"] in ("in", "ace") for e in events):
+            issues.append("A Double Fault cannot include a live serve or rally touches.")
+        if kind == "error" and any(e["result"] == "error" and e["player_id"] != classification["player_id"] for e in events):
+            issues.append("Touch log Error belongs to a different player.")
+        if kind == "error" and any(e["kind"] == "serve" and e["result"] == "ace" for e in events):
+            issues.append("An Ace serve cannot end in a named Error.")
+    if point["complete"] and events:
+        if kind == "ace" and not any(e["kind"] == "serve" and e["result"] == "ace"
+                                     and e["player_id"] == assignment["server_id"] for e in events):
+            issues.append("Touch log does not support the Ace classification.")
+        fault_attempts = [e for e in events if e["kind"] == "serve" and e["result"] != "let"]
+        if kind == "double_fault" and (len(fault_attempts) != 2 or any(e["result"] not in ("fault", "rim") for e in fault_attempts)):
+            issues.append("Touch log does not support the Double Fault classification.")
+        if kind == "error" and not any(e["player_id"] == classification["player_id"]
+                                       and e["result"] == "error" for e in events):
+            issues.append("Touch log does not support the named Error classification.")
+        if kind in ("defensive_break", "defensive_hold") and not any(e["kind"] == "defense" for e in events):
+            issues.append("A complete defensive outcome needs its defensive touch.")
+    return list(dict.fromkeys(issues))
+
+
 COUNTERS = (
     "points", "points_won", "serve_attempts", "serves_in", "aces", "aced", "faults", "rims", "lets",
     "double_faults", "receives", "strong_receives", "weak_receives", "receive_errors", "sets",
@@ -177,52 +222,100 @@ def original_rpr(stats, total_points, *, eligible):
 
 def calculate_statistics(rallies, settings=None):
     settings = settings or {}
+    rallies = list(rallies)
+    timeline = {row["index"]: row for row in match_timeline(rallies, settings)}
     roster = normalize_roster(settings.get("players"))
     players = {p["player_id"]: {**p, **dict.fromkeys(COUNTERS, 0)} for p in roster}
     teams = {team: {"name": settings.get(f"team_{team.lower()}", f"Team {team}"),
                     "points_won": 0, "breaks": 0, "broken": 0, "break_opportunities": 0,
                     "sideouts": 0, "sideout_opportunities": 0} for team in ("A", "B")}
-    coverage = {"points": 0, "complete": 0, "partial": 0, "untagged": 0, "invalid": 0, "replays": 0, "rejected": 0}
+    coverage = {"points": 0, "complete": 0, "partial": 0, "untagged": 0, "invalid": 0,
+                "replays": 0, "rejected": 0, "classified": 0, "unresolved": 0}
     point_rows, warnings, ace_pairs = [], [], Counter()
-    outcome_tags, player_tags = Counter(), Counter()
-    for rally in sorted(rallies, key=lambda r: _field(r, "start_time", _field(r, "start", 0))):
+    outcome_tags, player_tags, classification_counts = Counter(), Counter(), Counter()
+    for index, rally in sorted(enumerate(rallies), key=lambda item: (_field(item[1], "start_time", _field(item[1], "start", 0)), item[0])):
+        assignment = timeline[index]
+        classification = normalize_classification(_field(rally, "classification", {}))
+        kind = classification.get("kind", "")
         if _field(rally, "rejected", False):
             coverage["rejected"] += 1
             continue
-        if _field(rally, "outcome", "") == "Replay / no point":
+        if kind == "redo" or (not kind and _field(rally, "outcome", "") == "Replay / no point"):
             coverage["replays"] += 1
+            if kind:
+                classification_counts[kind] += 1
             continue
         coverage["points"] += 1
-        if _field(rally, "outcome", ""):
+        if kind:
+            coverage["classified"] += 1
+            classification_counts[kind] += 1
+        if not kind and _field(rally, "outcome", ""):
             outcome_tags[_field(rally, "outcome")] += 1
-        if _field(rally, "player", ""):
+        if not kind and _field(rally, "player", ""):
             player_tags[_field(rally, "player")] += 1
-        winner = _field(rally, "winner", "")
+        winner = assignment["winner"]
+        coverage["unresolved"] += int(not winner)
         if winner in teams:
             teams[winner]["points_won"] += 1
         point = normalize_point_stats(_field(rally, "point_stats", {}))
         issues = point_issues(point, winner, start=_field(rally, "start_time"), end=_field(rally, "end_time"))
+        if kind and point:
+            issues.extend(classified_point_issues(point, classification, assignment))
+        issues = list(dict.fromkeys(issues))
         row = {"rally_id": _field(rally, "rally_id", ""), "start": _field(rally, "start_time", 0),
                "end": _field(rally, "end_time", 0), "winner": winner, "enabled": _field(rally, "enabled", True),
                "outcome": _field(rally, "outcome", ""), "player_credit": _field(rally, "player", ""),
-               "note": _field(rally, "note", ""),
+               "note": _field(rally, "note", ""), "classification": kind,
+               "server_id": assignment["server_id"] if kind else point.get("server_id", ""),
+               "receiver_id": assignment["receiver_id"] if kind else point.get("receiver_id", ""),
                "point_stats": point, "issues": issues, "events": []}
         point_rows.append(row)
+        if kind:
+            for player in players.values():
+                player["points"] += 1
+                player["points_won"] += int(winner == player["team"])
+            if not assignment["provisional"]:
+                server, receiver = assignment["server_id"], assignment["receiver_id"]
+                serving, receiving = server[0], receiver[0]
+                broke = winner == serving
+                teams[serving]["break_opportunities"] += 1
+                teams[receiving]["sideout_opportunities"] += 1
+                teams[serving]["breaks"] += int(broke)
+                teams[receiving]["broken"] += int(broke)
+                teams[receiving]["sideouts"] += int(not broke)
+                players[server]["break_opportunities"] += 1
+                players[receiver]["sideout_opportunities"] += 1
+                players[server]["breaks"] += int(broke)
+                players[receiver]["broken"] += int(broke)
+                players[receiver]["sideouts"] += int(not broke)
+                if kind == "ace":
+                    players[server]["aces"] += 1
+                    players[receiver]["aced"] += 1
+                    ace_pairs[server, receiver] += 1
+                elif kind == "double_fault":
+                    players[server]["double_faults"] += 1
+            if kind == "error":
+                players[classification["player_id"]]["errors"] += 1
         if issues:
             coverage["invalid"] += 1
             warnings.append(f"Point at {row['start']:.2f}s: {' '.join(issues)}")
+            if kind == "double_fault" and not assignment["provisional"]:
+                players[assignment["server_id"]]["faults"] += 2
             continue
         if not point or not point["events"]:
             coverage["untagged"] += 1
+            if kind == "double_fault" and not assignment["provisional"]:
+                players[assignment["server_id"]]["faults"] += 2
             continue
         coverage["complete" if point["complete"] else "partial"] += 1
         events = resolve_events(point, winner)
         row["events"] = events
-        for player in players.values():
-            player["points"] += 1
-            player["points_won"] += int(winner == player["team"])
+        if not kind:
+            for player in players.values():
+                player["points"] += 1
+                player["points_won"] += int(winner == player["team"])
         server, receiver = point["server_id"], point["receiver_id"]
-        if server and winner:
+        if not kind and server and winner:
             serving, receiving = server[0], "B" if server[0] == "A" else "A"
             broke = winner == serving
             teams[serving]["break_opportunities"] += 1
@@ -230,61 +323,65 @@ def calculate_statistics(rallies, settings=None):
             teams[serving]["breaks"] += int(broke)
             teams[receiving]["broken"] += int(broke)
             teams[receiving]["sideouts"] += int(not broke)
-            for p in players.values():
-                p["break_opportunities"] += int(p["team"] == serving)
-                p["sideout_opportunities"] += int(p["team"] == receiving)
-                p["breaks"] += int(broke and p["team"] == serving)
-                p["broken"] += int(broke and p["team"] == receiving)
-                p["sideouts"] += int(not broke and p["team"] == receiving)
+            players[server]["break_opportunities"] += 1
+            players[server]["breaks"] += int(broke)
+            if receiver:
+                players[receiver]["sideout_opportunities"] += 1
+                players[receiver]["broken"] += int(broke)
+                players[receiver]["sideouts"] += int(not broke)
         serves = [e for e in events if e["kind"] == "serve"]
         attempts = [e for e in serves if e["result"] != "let"]
-        if point["complete"] and len(attempts) >= 2 and attempts[-1]["result"] in ("fault", "rim"):
+        if not kind and point["complete"] and len(attempts) >= 2 and attempts[-1]["result"] in ("fault", "rim"):
             players[attempts[-1]["player_id"]]["double_faults"] += 1
         for event in events:
             p = players[event["player_id"]]
-            kind, result = event["kind"], event["result"]
+            event_kind, result = event["kind"], event["result"]
             p["tough_touches"] += int(event.get("tough", False))
-            if kind == "serve":
+            if event_kind == "serve":
                 p["serve_attempts"] += int(result != "let")
                 p["serves_in"] += int(result in ("in", "ace"))
-                p["aces"] += int(result == "ace")
+                p["aces"] += int(not kind and result == "ace")
                 p["faults"] += int(result in ("fault", "rim"))
                 p["rims"] += int(result == "rim")
                 p["lets"] += int(result == "let")
                 if receiver and result in ("in", "ace"):
                     players[receiver]["receives"] += 1
-                    players[receiver]["aced"] += int(result == "ace")
-                    if result == "ace":
+                    players[receiver]["aced"] += int(not kind and result == "ace")
+                    if result == "ace" and not kind:
                         ace_pairs[event["player_id"], receiver] += 1
-            elif kind == "receive":
+            elif event_kind == "receive":
                 if not receiver:
                     p["receives"] += 1
                 key = {"strong": "strong_receives", "weak": "weak_receives", "error": "receive_errors"}.get(result)
                 if key:
                     p[key] += 1
-                p["errors"] += int(result == "error")
-            elif kind == "set":
+                p["errors"] += int(result == "error" and not (kind == "error" and event["player_id"] == classification["player_id"]))
+            elif event_kind == "set":
                 p["sets"] += 1
                 key = {"strong": "strong_sets", "weak": "weak_sets", "error": "set_errors"}.get(result)
                 if key:
                     p[key] += 1
-                p["errors"] += int(result == "error")
-            elif kind == "hit":
+                p["errors"] += int(result == "error" and not (kind == "error" and event["player_id"] == classification["player_id"]))
+            elif event_kind == "hit":
                 p["hit_attempts"] += 1
                 key = {"put_away": "put_aways", "returned": "hits_returned", "error": "hit_errors"}.get(result)
                 if key:
                     p[key] += 1
-                p["errors"] += int(result == "error")
-            elif kind == "defense":
+                p["errors"] += int(result == "error" and not (kind == "error" and event["player_id"] == classification["player_id"]))
+            elif event_kind == "defense":
                 p["defensive_touches"] += int(result != "no_touch")
                 key = {"get": "defensive_gets", "touch_not_returned": "defensive_not_returned", "no_touch": "no_touches"}.get(result)
                 if key:
                     p[key] += 1
             p["unknown_results"] += int(result == "unknown")
+        if kind == "double_fault":
+            players[assignment["server_id"]]["faults"] += max(0, 2 - sum(e["kind"] == "serve" and e["result"] in ("fault", "rim") for e in events))
     rated = bool(settings.get("stats_complete", False) and coverage["points"] > 0
                  and coverage["complete"] == coverage["points"]
+                 and not any(row["provisional"] for row in timeline.values())
                  and not settings.get("initial_score_a", 0) and not settings.get("initial_score_b", 0)
                  and not any(p["unknown_results"] for p in players.values()))
+    incomplete_classified_detail = any(_field(row, "classification", "") for row in point_rows) and coverage["complete"] != coverage["points"]
     for p in players.values():
         hits_known = p["put_aways"] + p["hits_returned"] + p["hit_errors"]
         receives_known = p["strong_receives"] + p["weak_receives"] + p["receive_errors"] + p["aced"]
@@ -297,6 +394,10 @@ def calculate_statistics(rallies, settings=None):
         p["error_pct"] = ratio(p["errors"], p["strong_receives"] + p["weak_receives"] + p["receive_errors"]
                                 + p["strong_sets"] + p["weak_sets"] + p["set_errors"] + hits_known)
         p["break_pct"] = ratio(p["breaks"], p["break_opportunities"])
+        if incomplete_classified_detail:
+            for metric in ("serve_pct", "ace_pct", "put_away_pct", "receive_pct", "strong_set_pct",
+                           "defensive_conversion_pct", "error_pct"):
+                p[metric] = None
         p["rpr"] = original_rpr(p, coverage["points"], eligible=rated)
     for identity, team in teams.items():
         team["initial_score"] = settings.get(f"initial_score_{identity.lower()}", 0)
@@ -305,7 +406,9 @@ def calculate_statistics(rallies, settings=None):
         team["sideout_pct"] = ratio(team["sideouts"], team["sideout_opportunities"])
     return {"schema_version": 1, "format": "roundnet_match_statistics", "players": list(players.values()),
             "teams": teams, "coverage": coverage, "points": point_rows, "warnings": warnings,
+            "provisional": any(row["provisional"] for row in timeline.values()),
             "outcome_tags": dict(outcome_tags), "player_tags": dict(player_tags),
+            "classification_counts": dict(classification_counts),
             "rpr_eligible": rated, "rpr_model": "original_max_model", "rpr_source": RPR_SOURCE,
             "aces_by_opponent": [{"server_id": a, "receiver_id": b, "aces": n} for (a, b), n in sorted(ace_pairs.items())]}
 

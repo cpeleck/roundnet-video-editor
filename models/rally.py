@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from .point_stats import normalize_point_stats
+from .match_flow import normalize_classification
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Rally:
     note: str = ""
     crop_keyframes: list[dict[str, float]] = field(default_factory=list)
     point_stats: dict[str, Any] = field(default_factory=dict)
+    classification: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # Coerce common numeric scalar types (including numpy scalar values) to
@@ -59,6 +61,7 @@ class Rally:
         self.serve_confidence = float(self.serve_confidence)
         self.crop_keyframes = deepcopy(self.crop_keyframes)
         self.point_stats = normalize_point_stats(self.point_stats)
+        self.classification = normalize_classification(self.classification)
         self.validate()
 
     @property
@@ -71,6 +74,7 @@ class Rally:
         """Raise :class:`ValueError` if the rally has invalid values."""
 
         normalize_point_stats(self.point_stats)
+        normalize_classification(self.classification)
         if not math.isfinite(self.start_time) or self.start_time < 0:
             raise ValueError("start_time must be a finite, non-negative number")
         if not math.isfinite(self.end_time) or self.end_time <= self.start_time:
@@ -170,6 +174,6 @@ class Rally:
             serve_confidence=data.get("serve_confidence", 0.0),
             **{name: data[name] for name in (
                 "rally_id", "reviewed", "rejected", "starred", "outcome", "winner",
-                "player", "note", "crop_keyframes", "point_stats"
+                "player", "note", "crop_keyframes", "point_stats", "classification"
             ) if name in data},
         )

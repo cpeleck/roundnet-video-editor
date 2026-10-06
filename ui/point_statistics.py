@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from models.point_stats import RESULTS, new_event, normalize_point_stats, normalize_roster
-from models.statistics import point_issues, resolve_events
+from models.statistics import classified_point_issues, point_issues, resolve_events
 from .video_player import VideoPlayerWidget, format_timestamp
 
 
@@ -27,6 +27,9 @@ class PointStatisticsDialog(QDialog):
         self.setWindowTitle("Point statistics · touch by touch")
         self.resize(1220, 810)
         self.rally = rally
+        self.classification = getattr(rally, "classification", {})
+        self.expected_server = settings.get("starting_server", "A1")
+        self.expected_receiver = settings.get("starting_receiver", "B1")
         self.roster = normalize_roster(settings.get("players"))
         self.names = {p["player_id"]: p["name"] for p in self.roster}
         self.point = normalize_point_stats(rally.point_stats) or {
@@ -48,8 +51,19 @@ class PointStatisticsDialog(QDialog):
         intro = QLabel("Tap the four players in touch order. Ace, Fault, and Error finish a point; "
                        "Point Won finishes a winning hit. The score and player counts are saved together. "
                        "Successful receives and sets default to Strong; revise any different touch below.")
+        if self.classification:
+            intro.setText("Add optional touch details for percentages and RPR. The clip outcome already sets the score and known player statistics. "
+                          "To change the outcome, use its button in the main editor.")
         intro.setWordWrap(True)
         root.addWidget(intro)
+        if self.classification and (self.point["server_id"] != self.expected_server
+                                    or self.point["receiver_id"] != self.expected_receiver):
+            stale = QLabel("Earlier clip edits changed this point's server or receiver. The saved touches need review.")
+            stale.setWordWrap(True)
+            root.addWidget(stale)
+            reset_details = QPushButton("Clear old touches and use this clip's serving assignment")
+            reset_details.clicked.connect(self._reset_stale_details)
+            root.addWidget(reset_details)
         body = QHBoxLayout()
         left = QVBoxLayout()
         self.video = VideoPlayerWidget()
@@ -78,6 +92,8 @@ class PointStatisticsDialog(QDialog):
         meta.addRow("Point winner", self.winner_combo)
         self.replay_box = QCheckBox("Replay / no point — exclude from statistics")
         self.replay_box.setChecked(self.replay)
+        if self.classification:
+            self.replay_box.setEnabled(False)
         meta.addRow(self.replay_box)
         right.addLayout(meta)
         self.score_preview = QLabel()
@@ -416,17 +432,40 @@ class PointStatisticsDialog(QDialog):
             self.status.setText("Replay: stored for reference, excluded from all point statistics.")
             return
         issues = point_issues(point, self.winner_combo.currentData(), start=self.rally.start_time, end=self.rally.end_time)
+        if self.classification:
+            issues += classified_point_issues(point, self.classification, {
+                "server_id": self.expected_server, "receiver_id": self.expected_receiver,
+                "provisional": False})
         if issues:
             self.status.setText("Needs correction: " + " ".join(issues[:3]))
         else:
             inferred = [f"{self.names[e['player_id']]}: {LABELS.get(e['result'], e['result'])}" for e, original in zip(resolved, self.events) if original["result"] == "auto"]
             self.status.setText(("Complete point. " if point["complete"] else "Draft — only known events count. ") + " · ".join(inferred))
 
+    def _reset_stale_details(self):
+        self.events = []
+        self.server.setCurrentIndex(self.server.findData(self.expected_server))
+        self.receiver.setCurrentIndex(self.receiver.findData(self.expected_receiver))
+        self.complete.setChecked(False)
+        self.refresh()
+
     def _save(self):
         point = self._current_point()
-        self.replay = self.replay_box.isChecked()
-        self.winner = "" if self.replay else self.winner_combo.currentData()
+        if self.classification:
+            if point["server_id"] != self.expected_server or point["receiver_id"] != self.expected_receiver:
+                QMessageBox.warning(self, "Check serving order", "The saved touch log must use the server and receiver shown for this clip. Change an earlier outcome or match setup if that assignment is wrong.")
+                return
+            self.replay = self.classification["kind"] == "redo"
+            self.winner = self.rally.winner
+            self.winner_combo.setCurrentIndex(self.winner_combo.findData(self.winner))
+        else:
+            self.replay = self.replay_box.isChecked()
+            self.winner = "" if self.replay else self.winner_combo.currentData()
         issues = point_issues(point, self.winner, start=self.rally.start_time, end=self.rally.end_time)
+        if self.classification:
+            issues += classified_point_issues(point, self.classification, {
+                "server_id": self.expected_server, "receiver_id": self.expected_receiver,
+                "provisional": False})
         if issues and not self.replay:
             QMessageBox.warning(self, "Check the touch sequence", "\n".join(issues))
             return

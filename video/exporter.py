@@ -368,6 +368,8 @@ def _prepare_presentation(
     video_filters: dict[int, str] = {}
     overlays: dict[int, int] = {}
     scores = scores_before_rallies(rallies, options)
+    from models.match_flow import match_timeline
+    provisional_scores = {row["index"] for row in match_timeline(list(rallies), options) if row["provisional"]}
     for index, segment in enumerate(segments):
         rally = rallies[segment.source_index]
         video_filters[index] = crop_filter(source_width, source_height,
@@ -376,6 +378,8 @@ def _prepare_presentation(
         if options["scoreboard"]:
             a, b = scores[segment.source_index]
             lines.extend([f"{options['team_a']}  {a}", f"{options['team_b']}  {b}"])
+            if segment.source_index in provisional_scores:
+                lines.append("Score provisional")
         if options["include_notes"]:
             tag = " / ".join(str(field(rally, key, "")) for key in ("player", "outcome") if field(rally, key, ""))
             if tag:
