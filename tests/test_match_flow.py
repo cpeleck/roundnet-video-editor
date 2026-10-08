@@ -56,10 +56,10 @@ def test_normalize_classification_accepts_only_the_versioned_shape():
 def test_initial_and_full_serving_turns_switch_receivers():
     rows = match_timeline([clip(n, "ace") for n in range(10)], SETTINGS)
     assert [row["server_id"] for row in rows] == [
-        "A1", "B1", "B1", "A2", "A2", "B2", "B2", "A1", "A1", "B1",
+        "A1", "B2", "B2", "A2", "A2", "B1", "B1", "A1", "A1", "B2",
     ]
     assert [row["receiver_id"] for row in rows] == [
-        "B1", "A2", "A1", "B2", "B1", "A1", "A2", "B1", "B2", "A2",
+        "B1", "A2", "A1", "B1", "B2", "A1", "A2", "B1", "B2", "A2",
     ]
     assert [row["scored_index"] for row in rows] == list(range(10))
     assert [row["winner"] for row in rows] == [
@@ -71,8 +71,8 @@ def test_rotation_works_when_team_b_serves_first():
     settings = {"starting_server": "B2", "starting_receiver": "A2"}
     rows = match_timeline([clip(n, "ace") for n in range(5)], settings)
     assert [(row["server_id"], row["receiver_id"]) for row in rows] == [
-        ("B2", "A2"), ("A2", "B1"), ("A2", "B2"),
-        ("B1", "A1"), ("B1", "A2"),
+        ("B2", "A2"), ("A1", "B1"), ("A1", "B2"),
+        ("B1", "A2"), ("B1", "A1"),
     ]
 
 
@@ -139,8 +139,8 @@ def test_chronological_order_legacy_winners_and_provisional_unknowns():
     ]
     assert [row["provisional"] for row in rows] == [False, False, True, True, True]
     assert [(row["server_id"], row["receiver_id"]) for row in rows] == [
-        ("A1", "B1"), ("B1", "A2"), ("B1", "A2"),
-        ("B1", "A2"), ("B1", "A2"),
+        ("A1", "B1"), ("B2", "A2"), ("B2", "A2"),
+        ("B2", "A2"), ("B2", "A2"),
     ]
     assert rows[3]["winner"] == ""
 
@@ -152,10 +152,10 @@ def test_overtime_switches_to_one_point_per_server_at_target():
         (20, 19), (21, 19), (21, 20),
     ]
     assert [row["server_id"] for row in rows] == [
-        "A1", "B1", "A2", "B2", "A1", "B1",
+        "A1", "B2", "A2", "B1", "A1", "B2",
     ]
     assert [row["receiver_id"] for row in rows] == [
-        "B1", "A2", "B2", "A1", "B1", "A2",
+        "B1", "A2", "B1", "A1", "B1", "A2",
     ]
 
 
@@ -169,3 +169,15 @@ def test_invalid_starting_pair_or_score_settings_are_rejected():
     for settings in invalid:
         with pytest.raises(ValueError):
             match_timeline([], settings)
+
+
+@pytest.mark.parametrize('server,receiver', [
+    (s, r) for s in ('A1', 'A2', 'B1', 'B2')
+    for r in ('A1', 'A2', 'B1', 'B2') if s[0] != r[0]
+])
+def test_next_turn_is_receiver_partner_against_server_partner(server, receiver):
+    partner = lambda pid: pid[0] + ('2' if pid[1] == '1' else '1')
+    rows = match_timeline([clip(0, 'sideout'), clip(1, 'redo'), clip(2, 'ace')],
+                          {'starting_server': server, 'starting_receiver': receiver})
+    assert (rows[1]['server_id'], rows[1]['receiver_id']) == (partner(receiver), partner(server))
+    assert (rows[2]['server_id'], rows[2]['receiver_id']) == (partner(receiver), partner(server))

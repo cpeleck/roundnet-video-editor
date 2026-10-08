@@ -41,8 +41,8 @@ def classified(start, kind, *, player_id=None, **kwargs):
 
 def test_classifications_credit_known_players_and_teams_without_touch_logs():
     rallies = [classified(0, "ace"), classified(1, "redo", winner="B", point_stats={
-        "version": 1, "complete": True, "server_id": "B1", "receiver_id": "A2",
-        "events": [event("B1", "serve", "ace")]}),
+        "version": 1, "complete": True, "server_id": "B2", "receiver_id": "A2",
+        "events": [event("B2", "serve", "ace")]}),
         classified(2, "double_fault"), classified(3, "error", player_id="A2")]
     report = calculate_statistics(rallies, {"starting_server": "A1", "starting_receiver": "B1"})
     assert (report["teams"]["A"]["score"], report["teams"]["B"]["score"]) == (2, 1)
@@ -52,17 +52,17 @@ def test_classifications_credit_known_players_and_teams_without_touch_logs():
     assert report["classification_counts"] == {"ace": 1, "redo": 1, "double_fault": 1, "error": 1}
     assert [(row["server_id"], row["receiver_id"], row["winner"], row["classification"])
             for row in report["points"]] == [
-                ("A1", "B1", "A", "ace"), ("B1", "A2", "A", "double_fault"),
-                ("B1", "A1", "B", "error")]
+                ("A1", "B1", "A", "ace"), ("B2", "A2", "A", "double_fault"),
+                ("B2", "A1", "B", "error")]
     assert player(report, "A1")["aces"] == 1
     assert player(report, "B1")["aced"] == 1
-    assert player(report, "B1")["double_faults"] == 1
-    assert player(report, "B1")["faults"] == 2
+    assert player(report, "B2")["double_faults"] == 1
+    assert player(report, "B2")["faults"] == 2
     assert player(report, "A2")["errors"] == 1
     assert all(player(report, identity)["points"] == 3 for identity in ("A1", "A2", "B1", "B2"))
     assert player(report, "A1")["breaks"] == 1
     assert player(report, "A2")["breaks"] == 0
-    assert player(report, "B1")["breaks"] == 1
+    assert player(report, "B2")["breaks"] == 1
     assert player(report, "B1")["broken"] == 1
     assert player(report, "A2")["sideouts"] == 1
     assert all(player(report, identity)["serve_pct"] is None for identity in ("A1", "A2", "B1", "B2"))
@@ -75,19 +75,19 @@ def test_matching_touch_details_do_not_double_count_classified_facts():
     rallies = [classified(0, "ace", point_stats={"version": 1, "complete": True,
                "server_id": "A1", "receiver_id": "B1", "events": [event("A1", "serve", "ace")]}),
         classified(1, "double_fault", point_stats={"version": 1, "complete": True,
-                   "server_id": "B1", "receiver_id": "A2", "events": [
-                       event("B1", "serve", "fault"), event("B1", "serve", "rim")]}),
+                   "server_id": "B2", "receiver_id": "A2", "events": [
+                       event("B2", "serve", "fault"), event("B2", "serve", "rim")]}),
         classified(2, "error", player_id="A1", point_stats={"version": 1, "complete": True,
-                   "server_id": "B1", "receiver_id": "A1", "events": [
-                       event("B1", "serve", "in"), event("A1", "receive", "error")]})]
+                   "server_id": "B2", "receiver_id": "A1", "events": [
+                       event("B2", "serve", "in"), event("A1", "receive", "error")]})]
     report = calculate_statistics(rallies)
     assert report["coverage"]["complete"] == 3
     assert not report["warnings"]
     assert player(report, "A1")["aces"] == 1
     assert player(report, "B1")["aced"] == 1
-    assert player(report, "B1")["double_faults"] == 1
-    assert player(report, "B1")["faults"] == 2
-    assert player(report, "B1")["rims"] == 1
+    assert player(report, "B2")["double_faults"] == 1
+    assert player(report, "B2")["faults"] == 2
+    assert player(report, "B2")["rims"] == 1
     assert player(report, "A1")["errors"] == player(report, "A1")["receive_errors"] == 1
     assert player(report, "A1")["serve_pct"] == 1
 
@@ -276,13 +276,16 @@ def test_original_rpr_exact_formula_unclamped_and_long_game_scaling():
     assert original_rpr(p, 44, eligible=True)["overall"] is None
 
 
-def test_rpr_requires_full_coverage_and_explicit_match_confirmation():
+def test_rpr_calculates_automatically_and_confirmation_marks_it_final():
     r = long_rally()
-    assert not calculate_statistics([r])["rpr_eligible"]
+    assert calculate_statistics([r])["rpr_eligible"]
+    assert not calculate_statistics([r])["rpr_final"]
+    assert calculate_statistics([r], {"stats_complete": True})["rpr_final"]
     assert calculate_statistics([r], {"stats_complete": True})["rpr_eligible"]
     assert player(calculate_statistics([r], {"stats_complete": True}), "A1")["rpr"]["overall"] is None  # no hit
     assert not calculate_statistics([r], {"stats_complete": True, "initial_score_a": 1})["rpr_eligible"]
-    assert not calculate_statistics([r, Rally(25, 27)], {"stats_complete": True})["rpr_eligible"]
+    assert calculate_statistics([r, Rally(25, 27)])["rpr_eligible"]
+    assert not calculate_statistics([r, Rally(25, 27)], {"stats_complete": True})["rpr_final"]
     r.point_stats["events"][1]["result"] = "unknown"
     assert not calculate_statistics([r], {"stats_complete": True})["rpr_eligible"]
 

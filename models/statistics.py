@@ -230,7 +230,8 @@ def calculate_statistics(rallies, settings=None):
                     "points_won": 0, "breaks": 0, "broken": 0, "break_opportunities": 0,
                     "sideouts": 0, "sideout_opportunities": 0} for team in ("A", "B")}
     coverage = {"points": 0, "complete": 0, "partial": 0, "untagged": 0, "invalid": 0,
-                "replays": 0, "rejected": 0, "classified": 0, "unresolved": 0}
+                "replays": 0, "rejected": 0, "classified": 0, "unresolved": 0,
+                "rpr_complete": 0, "touch_quality_complete": 0}
     point_rows, warnings, ace_pairs = [], [], Counter()
     outcome_tags, player_tags, classification_counts = Counter(), Counter(), Counter()
     for index, rally in sorted(enumerate(rallies), key=lambda item: (_field(item[1], "start_time", _field(item[1], "start", 0)), item[0])):
@@ -310,6 +311,11 @@ def calculate_statistics(rallies, settings=None):
         coverage["complete" if point["complete"] else "partial"] += 1
         events = resolve_events(point, winner)
         row["events"] = events
+        ungraded = any(e["result"] == "unknown" for e in events)
+        rpr_unknown = any(e["result"] == "unknown" and
+                          (not point.get("quick_log") or e["kind"] not in ("receive", "set")) for e in events)
+        coverage["rpr_complete"] += int(point["complete"] and not rpr_unknown)
+        coverage["touch_quality_complete"] += int(point["complete"] and not ungraded and not point.get("quick_log"))
         if not kind:
             for player in players.values():
                 player["points"] += 1
@@ -376,12 +382,16 @@ def calculate_statistics(rallies, settings=None):
             p["unknown_results"] += int(result == "unknown")
         if kind == "double_fault":
             players[assignment["server_id"]]["faults"] += max(0, 2 - sum(e["kind"] == "serve" and e["result"] in ("fault", "rim") for e in events))
-    rated = bool(settings.get("stats_complete", False) and coverage["points"] > 0
-                 and coverage["complete"] == coverage["points"]
-                 and not any(row["provisional"] for row in timeline.values())
-                 and not settings.get("initial_score_a", 0) and not settings.get("initial_score_b", 0)
-                 and not any(p["unknown_results"] for p in players.values()))
-    incomplete_classified_detail = any(_field(row, "classification", "") for row in point_rows) and coverage["complete"] != coverage["points"]
+    # Calculate automatically from the recorded points. Empty future clips
+    # do not block a running rating, but missing/invalid scored-point evidence
+    # must never silently bias it. Confirmation only identifies a final rating.
+    recorded_points = coverage["points"] - coverage["unresolved"]
+    rated = bool(recorded_points > 0 and coverage["rpr_complete"] == recorded_points
+                 and not coverage["invalid"] and not coverage["partial"]
+                 and not any(row["provisional"] and row["winner"] for row in timeline.values())
+                 and not settings.get("initial_score_a", 0) and not settings.get("initial_score_b", 0))
+    final_rating = bool(rated and settings.get("stats_complete", False) and not coverage["unresolved"])
+    incomplete_classified_detail = any(_field(row, "classification", "") for row in point_rows) and (coverage["complete"] != recorded_points or coverage["invalid"] or coverage["partial"])
     for p in players.values():
         hits_known = p["put_aways"] + p["hits_returned"] + p["hit_errors"]
         receives_known = p["strong_receives"] + p["weak_receives"] + p["receive_errors"] + p["aced"]
@@ -398,7 +408,12 @@ def calculate_statistics(rallies, settings=None):
             for metric in ("serve_pct", "ace_pct", "put_away_pct", "receive_pct", "strong_set_pct",
                            "defensive_conversion_pct", "error_pct"):
                 p[metric] = None
-        p["rpr"] = original_rpr(p, coverage["points"], eligible=rated)
+        if any(row["point_stats"].get("quick_log") for row in point_rows):
+            # Quick evidence determines RPR roles, not touch-quality grades or
+            # the denominator of all physical contacts.
+            for metric in ("receive_pct", "strong_set_pct", "error_pct"):
+                p[metric] = None
+        p["rpr"] = original_rpr(p, recorded_points, eligible=rated)
     for identity, team in teams.items():
         team["initial_score"] = settings.get(f"initial_score_{identity.lower()}", 0)
         team["score"] = team["initial_score"] + team["points_won"]
@@ -409,7 +424,7 @@ def calculate_statistics(rallies, settings=None):
             "provisional": any(row["provisional"] for row in timeline.values()),
             "outcome_tags": dict(outcome_tags), "player_tags": dict(player_tags),
             "classification_counts": dict(classification_counts),
-            "rpr_eligible": rated, "rpr_model": "original_max_model", "rpr_source": RPR_SOURCE,
+            "rpr_eligible": rated, "rpr_final": final_rating, "rpr_model": "original_max_model", "rpr_source": RPR_SOURCE,
             "aces_by_opponent": [{"server_id": a, "receiver_id": b, "aces": n} for (a, b), n in sorted(ace_pairs.items())]}
 
 

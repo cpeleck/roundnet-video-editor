@@ -1,7 +1,10 @@
 # Roundnet Rally Editor
 
-A local, macOS-focused desktop editor that turns a full roundnet/Spikeball
-recording into reviewable rally clips and highlight videos. Detection proposes
+A local, macOS-focused editor that turns a full roundnet/Spikeball recording
+into reviewable rally clips and highlight videos. The React interface guides
+you through **Setup → Find clips → Review → Export**, backed by a local FastAPI
+service and the existing Python detector, scoring, statistics, and exporter.
+The original PySide6 desktop interface is also available. Detection proposes
 cuts; you retain control over every decision. Video, analysis, corrections, and
 learned profiles stay on your machine. No account or upload is required.
 
@@ -38,6 +41,7 @@ has not yet been established on a labeled benchmark.
 - macOS is the desktop target. Core detection/export code is largely portable.
 - Python 3.10 or newer.
 - FFmpeg and FFprobe on `PATH`.
+- Node.js 20.19+ or 22.12+ and npm (or pnpm) for the React development interface.
 - For native macOS body-pose detection, Apple's Swift compiler must be available
   (normally supplied by Xcode Command Line Tools). The first analysis compiles a
   small local helper; later runs reuse its temporary cache. The system Vision
@@ -45,19 +49,77 @@ has not yet been established on a labeled benchmark.
   back to OpenCV's bundled HOG person detector and reports the fallback.
 
 ```bash
-brew install python ffmpeg
+brew install python ffmpeg node
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python main.py
+cd frontend
+npm install
+cd ..
+python run_web.py
 ```
 
-PySide6 provides the desktop interface, OpenCV provides frame/person analysis,
-and NumPy provides signal processing and local profile training. Optional Apple
-VideoToolbox encoding has a software H.264 fallback. No GPU is required.
+The launcher opens [the local interface](http://127.0.0.1:5173), starts the API
+on `127.0.0.1:8000`, and stops both services when you press Ctrl+C. Both services
+bind to loopback. Use `--no-browser` to open the page yourself, `--reload` to
+reload the API while changing Python code, or `--api-port` / `--frontend-port`
+when the default ports are occupied. `--node /path/to/node` selects a Node
+executable that is outside `PATH`. The launcher uses its current Python
+environment and requires dependencies to be installed first.
 
-## A recommended first edit
+To run the services separately:
+
+```bash
+# From the repository, with the virtual environment active:
+python -m uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
+# In another terminal:
+cd frontend
+npm run dev
+```
+
+For the native desktop interface, activate the same virtual environment and run
+`python main.py`. PySide6 provides that interface, OpenCV provides frame/person
+analysis, and NumPy provides signal processing and local profile training.
+Optional Apple VideoToolbox encoding has a software H.264 fallback. No GPU is
+required. The browser version is a local development application; a packaged
+desktop host and installer have not been added.
+
+## A first edit in the browser
+
+1. Choose **New match**, select the local recording, and enter two teams and four
+   players. Choose the starting server and an opposing receiver. Match options
+   allow a starting score and a points-to-win target for partial recordings.
+2. Choose automatic detection or manual clipping. Automatic detection opens
+   court setup before **Find rallies**; manual clipping goes directly to review.
+3. Watch a clip and select its outcome. **Error** asks for the responsible
+   player. The score, server/receiver, known statistics, and saved project update
+   together; Undo restores an earlier edit. Optional defensive touches and
+   detailed touch logs supply the information needed for deeper statistics.
+4. Trim clips as needed. **Not a rally** removes a false detection from match
+   scoring; **Exclude from export** omits a real clip from the video while
+   preserving its point and statistics. Star clips to shortlist highlights.
+5. Open **Stats** to review player cards and coverage. Missing outcomes explain
+   provisional scoring; touch-dependent statistics remain unknown until their
+   required details are recorded. RPR recalculates automatically from logged points; full-match confirmation
+   marks the rating as final.
+6. Choose **Full match** or **Highlights** in Export. Highlights use a separate
+   ordered queue with their own trims and crop keyframes. Preview the same Python
+   end-card renderer used in the output, set its duration, choose a destination,
+   and export. Detection and export show progress and can be cancelled.
+
+**More options** also lets you download correction labels as a ZIP containing
+the source-time JSON and, when analysis exists, its aligned NPZ features. Only
+confirm reviewing the whole recording after checking for missed rallies;
+otherwise unseen background and unreviewed proposals remain unknown. This
+training confirmation is separate from full-match confirmation for RPR.
+
+Return to Projects to resume autosaved work or open an existing `.roundnet.json`
+project. Project setup remains editable. Keep source media at a stable path; the
+project references that file rather than copying it. Recovery files for the
+browser interface are kept in `.roundnet/web/`.
+
+## A first edit in the native desktop interface
 
 1. Open a game video. Keep the original in a stable location. Enter both teams,
    all four players, the starting server and receiver, the initial score, and
@@ -166,8 +228,8 @@ An optional local COCO17 YOLOv8/11-style pose ONNX model can be configured throu
 
 The editor does not automatically referee or identify players. After match setup,
 choose one outcome for each clip. The starting pair determines the next server
-and receiver under equal serving: the opening server serves once, later servers
-serve twice, and win-by-two overtime uses one serve per turn. The point winner
+and receiver under equal serving: the opening server serves once, then the receiver’s partner serves to the
+opening server’s partner (A1 → B1, then B2 → A2). Later servers serve twice, and win-by-two overtime uses one serve per turn. The point winner
 follows from the clip outcome and that serving assignment. Changing an earlier
 classification recalculates later assignments and scores. An unclassified clip
 makes later assignments provisional until you classify it. The outcome buttons
@@ -198,8 +260,9 @@ Export player CSV, full event JSON, or a shareable PNG card. Classifications
 and optional touch logs are saved in projects and recovery and support undo/redo.
 
 The **Original RPR** tab calculates Hitting, Serving, Defense, and Efficiency
-using the published original model. It requires explicit full-match confirmation,
-complete touch logs, known results, and serve/hit attempts for each rated player.
+using the published original model. It calculates automatically from complete recorded-point evidence, known
+results, and serve/hit attempts for each rated player. Full-match confirmation
+marks the rating as final; future unclassified clips do not block a running rating.
 It is not a claim to reproduce later proprietary rating revisions. Player identity
 and touch quality are entered manually, not detected from video. See
 [statistics definitions and formulas](docs/statistics.md) for denominators,
@@ -209,7 +272,8 @@ Stars mark highlights independently from whether a clip is enabled. Choose
 starred-only export for a highlights cut. The scoreboard shows the score before
 each included point, accounting for valid points omitted from the cut. Optional
 captions use the clip's player/outcome/note. A supplied PNG is placed at the lower
-right as branding. The export dialog previews the final-score player card and lets
+right as branding. Exports include the current score, player statistics, and RPR end card by default.
+The export dialog previews that player card and lets
 you set how many seconds it stays on screen.
 
 **Set assisted crop keyframes** lets you choose source timestamps and click the
@@ -290,6 +354,9 @@ python -m detection.detector --help
 python -m pytest -q
 # Optional native desktop workflow tests (requires an active macOS session):
 ROUNDNET_GUI_TESTS=1 python -m pytest tests/test_gui_workflow.py -q
+# Type-check and build the browser interface:
+cd frontend
+npm run build
 ```
 
 The detector can write JSON with `--output-json` and diagnostic series with
@@ -319,6 +386,10 @@ test results must not be read as measured real-roundnet accuracy.
 
 ```text
 main.py                 application entry point
+run_web.py              local API and React development launcher
+application/            Qt-independent project commands and managed worker jobs
+backend/                local FastAPI routes for projects, media, previews, and jobs
+frontend/               React setup, court selection, clip review, statistics, and export
 config/                 detection/export settings
 models/                 rally metadata, player statistics, projects, and edit history
 detection/              signals, court/player cues, scoring, and segmentation
@@ -328,3 +399,23 @@ ui/                     player, timeline, review, statistics, court/crop, and le
 docs/                   statistics workflow, metric definitions, and rating formulas
 tests/                  automated regression and generated-media integration tests
 ```
+
+### Browser review controls
+
+Mark start/end with the buttons or **W/X**. Boundaries capture the actual video
+time; marking the end pauses and selects the new clip. Invalid ends show a
+message, and failed saves keep the start marker for retry. After an outcome and
+its required player details save, playback continues from that clip's end.
+Previous/Next and **[ / ]** select clips; **Left/Right** and **−5s/+5s** seek five
+seconds. Selected clips replay within their boundaries, while playback after
+classification continues through the source.
+
+Defensive outcomes and Error require an inline possession log. Each first-touch
+selection suggests the same player as hitter; correct that suggestion when
+needed, then identify the finisher or error player/type. Serve and costly-touch
+corrections are available in the same panel. Quick defaults are saved with the
+point and support RPR without inventing receive/set quality. See
+[statistics documentation](docs/statistics.md) for assumptions and eligibility.
+
+Frontend regression checks: `cd frontend && pnpm test`; production check:
+`pnpm build`. Backend checks: `.venv/bin/python -m pytest -q`.

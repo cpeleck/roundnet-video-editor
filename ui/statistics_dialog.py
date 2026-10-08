@@ -49,8 +49,9 @@ def _rally_field(rally, key, default=None):
 
 def _touch_details_complete(report):
     coverage = report["coverage"]
-    return bool(coverage["points"] and coverage["complete"] == coverage["points"]
-                and not coverage["invalid"])
+    recorded_points = coverage["points"] - coverage["unresolved"]
+    return bool(recorded_points and coverage["complete"] == recorded_points
+                and not coverage["invalid"] and not coverage["partial"])
 
 
 def _count(value, *, known):
@@ -64,7 +65,7 @@ def card_values(p, *, touch_details_complete=True, outcomes_complete=True):
             f"{p['aces']} : {p['aced']}" if outcomes_complete else "Unknown",
             percent(p["put_away_pct"] if touch_details_complete else None),
             _count(p["defensive_gets"], known=touch_details_complete),
-            (f"{p['strong_sets']} : {p['weak_sets']}" if touch_details_complete else "Unknown"),
+            (f"{p['strong_sets']} : {p['weak_sets']}" if touch_details_complete and p['strong_set_pct'] is not None else "Unknown"),
             str(p["errors"]) if outcomes_complete else "Unknown",
             f"{p['aces']} : {_count(p['rims'], known=touch_details_complete)}" if outcomes_complete else "Unknown",
             (f"{p['breaks']} : {p['broken']}" if outcomes_complete else "Unknown"))
@@ -94,9 +95,9 @@ class StatisticsDialog(QDialog):
         self.coverage = QLabel()
         self.coverage.setWordWrap(True)
         layout.addWidget(self.coverage)
-        self.complete = QCheckBox("Confirm this is the entire match from 0–0 for RPR")
+        self.complete = QCheckBox("Confirm this is the entire match from 0–0")
         self.complete.setToolTip("Score, classified outcomes, and their known player counts update without this confirmation. "
-                                 "RPR also needs complete touch details for every point.")
+                                 "RPR calculates automatically from complete recorded-point evidence; confirmation marks it final.")
         self.complete.setChecked(bool(settings.get("stats_complete", False)))
         self.complete.toggled.connect(self.refresh)
         layout.addWidget(self.complete)
@@ -170,8 +171,8 @@ class StatisticsDialog(QDialog):
                                 if report["provisional"] or c["unresolved"] else
                                 "Some older clips lack enough detail for every player total. "
                                 if not outcomes_complete else "")
-                             + ("RPR can be calculated for players with serve and hit attempts." if report["rpr_eligible"] else
-                                "RPR needs complete touch logs, a 0–0 initial score, and match confirmation."))
+                             + ("RPR updates automatically for players with serve and hit attempts." if report["rpr_eligible"] else
+                                "RPR needs complete evidence for recorded points and a 0–0 initial score."))
         tab_index = self.tabs.currentIndex()
         while self.tabs.count():
             widget = self.tabs.widget(0)

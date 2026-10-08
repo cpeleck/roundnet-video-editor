@@ -255,14 +255,17 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
     label("KNOWN PLAYER STATISTICS" if provisional else "PLAYER STATISTICS", left, .235, .8, (130, 190, 255), 2)
     col_left = .31
     cell_width = (right - col_left) / 4
+    rating_label = "RPR" if detail.get("rpr_final") else "RPR so far"
     labels = ["Serve %", "Aces : Aced", "Put-away %", "Defensive Gets",
               "Strong : Weak Sets", "Errors", "+/-  Ace : Rim", "Breaks : Broken",
-              "Hitting", "Serving", "Defense", "Efficiency", "RPR"]
+              "Hitting", "Serving", "Defense", "Efficiency", rating_label]
     coverage = detail["coverage"]
-    details_known = coverage["points"] > 0 and coverage["complete"] == coverage["points"]
-    outcomes_known = not provisional and all(
+    recorded_points = coverage["points"] - coverage["unresolved"]
+    details_known = recorded_points > 0 and coverage["complete"] == recorded_points and not coverage["invalid"] and not coverage["partial"]
+    quality_known = details_known and coverage.get("touch_quality_complete", coverage["complete"]) == recorded_points
+    outcomes_known = recorded_points > 0 and all(
         point.get("classification") or (point["point_stats"].get("complete") and not point["issues"])
-        for point in detail.get("points", []))
+        for point in detail.get("points", []) if point["winner"])
     def pct(value, numerator, denominator):
         return "--" if value is None else f"{value*100:.0f}% ({numerator}/{denominator})"
     def values(p):
@@ -273,7 +276,7 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
                 f"{p['aces']} : {p['aced']}" if outcomes_known else "--",
                 pct(p["put_away_pct"], p["put_aways"], known_hits),
                 str(p["defensive_gets"]) if details_known else "--",
-                f"{p['strong_sets']} : {p['weak_sets']}" if details_known else "--",
+                f"{p['strong_sets']} : {p['weak_sets']}" if quality_known else "--",
                 str(p["errors"]) if outcomes_known else "--",
                 f"{p['aces']} : {p['rims'] if details_known else '--'}" if outcomes_known else "--",
                 f"{p['breaks']} : {p['broken']}" if outcomes_known else "--",
@@ -305,7 +308,7 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
             rect(.445, panel_top, .448, panel_top + .37, (116, 111, 105))
             rect(.705, panel_top, .708, panel_top + .37, (116, 111, 105))
         status = f"{unresolved} outcomes unresolved  |  " if provisional else ""
-        label(status + f"{coverage['complete']}/{coverage['points']} points fully logged  |  -- = unknown until logged/classified", left, .97,
+        label(status + f"{coverage.get('rpr_complete', coverage['complete'])}/{coverage['points']} points with RPR evidence  |  -- = unknown until logged/classified", left, .97,
               .66, (175, 189, 199), max_width=.95)
         return canvas
     table_top = .265
@@ -334,9 +337,9 @@ def render_player_end_card_image(width: int, height: int, summary: Mapping[str, 
         rect(col_left + col * cell_width - .0015, table_top, col_left + col * cell_width + .0015,
              bottom, (116, 111, 105))
     footer = (f"{unresolved} outcomes unresolved  |  " if provisional else "")
-    footer += f"{coverage['complete']}/{coverage['points']} points fully logged  |  -- = unknown until logged/classified"
+    footer += f"{coverage.get('rpr_complete', coverage['complete'])}/{coverage['points']} points with RPR evidence  |  -- = unknown until logged/classified"
     if not detail["rpr_eligible"]:
-        footer += "  |  RPR appears after full-match confirmation and complete touch logs"
+        footer += "  |  RPR needs complete recorded-point evidence and serve/hit attempts"
     label(footer, left, .975, .58, (175, 189, 199), max_width=.95)
     return canvas
 

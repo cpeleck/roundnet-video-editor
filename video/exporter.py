@@ -117,6 +117,7 @@ def generate_export_segments(
     *,
     source_duration: float | None = None,
     highlights_only: bool = False,
+    segment_order: Sequence[str] | None = None,
 ) -> tuple[ExportSegment, ...]:
     """Convert enabled Rally-like objects into chronological source intervals.
 
@@ -134,12 +135,22 @@ def generate_export_segments(
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError("source_duration must be a positive finite number")
 
+    items = list(rallies)
+    order = list(segment_order) if segment_order is not None else None
+    if order is not None:
+        if len(order) != len(set(order)):
+            raise ExportError("The export queue contains duplicate rally identities")
+        identities = [str(_field(item, ("rally_id",), "")) for item in items]
+        if any(identity not in identities for identity in order):
+            raise ExportError("The export queue contains an unknown rally identity")
     segments: list[ExportSegment] = []
-    for index, rally in enumerate(rallies):
+    for index, rally in enumerate(items):
         enabled = _field(rally, ("enabled",), True)
         if not bool(enabled) or bool(_field(rally, ("rejected",), False)):
             continue
         if highlights_only and not bool(_field(rally, ("starred",), False)):
+            continue
+        if order is not None and str(_field(rally, ("rally_id",), "")) not in order:
             continue
         if isinstance(rally, Sequence) and not isinstance(rally, (str, bytes)):
             if len(rally) != 2:
@@ -176,6 +187,9 @@ def generate_export_segments(
             end = min(end, duration)
         segments.append(ExportSegment(start, end, index))
 
+    if order is not None:
+        positions = {identity: index for index, identity in enumerate(order)}
+        return tuple(sorted(segments, key=lambda segment: positions[str(_field(items[segment.source_index], ("rally_id",), ""))]))
     return tuple(sorted(segments, key=lambda segment: (segment.start_time, segment.end_time)))
 
 
@@ -356,6 +370,7 @@ def _prepare_presentation(
     segments: Sequence[ExportSegment],
     metadata: VideoMetadata,
     options: Mapping[str, Any],
+    presentation_rallies: Sequence[object] | None = None,
 ) -> tuple[list[Path], dict[str, Any]]:
     """Build optional artwork once so hardware retry reuses identical content."""
     active = options["aspect_ratio"] != "source" or any(options[key] for key in
@@ -367,9 +382,10 @@ def _prepare_presentation(
     images: list[Path] = []
     video_filters: dict[int, str] = {}
     overlays: dict[int, int] = {}
-    scores = scores_before_rallies(rallies, options)
+    canonical_rallies = list(presentation_rallies) if presentation_rallies is not None else rallies
+    scores = scores_before_rallies(canonical_rallies, options)
     from models.match_flow import match_timeline
-    provisional_scores = {row["index"] for row in match_timeline(list(rallies), options) if row["provisional"]}
+    provisional_scores = {row["index"] for row in match_timeline(list(canonical_rallies), options) if row["provisional"]}
     for index, segment in enumerate(segments):
         rally = rallies[segment.source_index]
         video_filters[index] = crop_filter(source_width, source_height,
@@ -400,7 +416,7 @@ def _prepare_presentation(
         filters["custom_overlay_input"] = len(images)
     if options["include_stats"]:
         path = directory / "player-end-card.png"
-        render_player_end_card(path, width, height, match_statistics(rallies, options))
+        render_player_end_card(path, width, height, match_statistics(canonical_rallies, options))
         images.append(path)
         filters["stats_input"] = len(images)
         filters["stats_duration"] = options["stats_duration"]
@@ -625,6 +641,8 @@ class FFmpegExporter:
         metadata: VideoMetadata | None = None,
         has_audio: bool | None = None,
         export_options: Mapping[str, Any] | None = None,
+        segment_order: Sequence[str] | None = None,
+        presentation_rallies: Sequence[object] | None = None,
     ) -> ExportResult:
         """Export enabled rallies to a high-quality, broadly compatible MP4."""
 
@@ -663,11 +681,18 @@ class FFmpegExporter:
         except (ValueError, TypeError) as exc:
             raise ExportError(f"Invalid export options: {exc}") from exc
         all_rallies = list(rallies)
+        if presentation_rallies is not None:
+            if len(presentation_rallies) != len(all_rallies) or any(
+                field(before, "rally_id") != field(after, "rally_id")
+                for before, after in zip(presentation_rallies, all_rallies)
+            ):
+                raise ExportError("Canonical presentation rallies must match the clip identities and order")
         ffmpeg_path = self.ffmpeg_path
         source_metadata = metadata or self._probe_metadata(source)
         segments = generate_export_segments(
             all_rallies, source_duration=source_metadata.duration_seconds,
             highlights_only=options["highlights_only"],
+            segment_order=segment_order,
         )
         if not segments:
             raise ExportError("No enabled rallies are available to export")
@@ -705,7 +730,7 @@ class FFmpegExporter:
         try:
             try:
                 image_inputs, filter_options = _prepare_presentation(
-                    Path(assets_directory.name), all_rallies, segments, source_metadata, options)
+                    Path(assets_directory.name), all_rallies, segments, source_metadata, options, presentation_rallies)
             except (ValueError, KeyError, TypeError, OSError) as exc:
                 raise ExportError(f"Could not prepare export presentation: {exc}") from exc
             for encoder in encoders:
@@ -787,6 +812,8 @@ def export_rallies(
     ffmpeg_path: str | os.PathLike[str] | None = None,
     ffprobe_path: str | os.PathLike[str] | None = None,
     export_options: Mapping[str, Any] | None = None,
+    segment_order: Sequence[str] | None = None,
+    presentation_rallies: Sequence[object] | None = None,
 ) -> ExportResult:
     """Functional wrapper around :class:`FFmpegExporter`."""
 
@@ -802,6 +829,8 @@ def export_rallies(
         progress_callback=progress_callback,
         cancel_callback=cancel_callback,
         export_options=export_options,
+        segment_order=segment_order,
+        presentation_rallies=presentation_rallies,
     )
 
 

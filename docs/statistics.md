@@ -9,7 +9,9 @@ Slots A1, A2, B1, and B2 are stable identities: renaming a player updates the
 displayed name without moving credits. This is one four-player match, not a
 season database. The starting pair determines server and receiver for each
 scored point under equal serving. The opening server serves once, subsequent
-servers serve twice, and win-by-two overtime uses one serve per turn.
+servers serve twice, and win-by-two overtime uses one serve per turn. After
+A1 serves to B1, B2 serves to A2, then A1; A2 serves to B1, then B2;
+B1 serves to A1, then A2. The same partner rotation applies to any starting pair.
 
 Select a clip in Point / Highlight and click one outcome. The score and facts
 known from that outcome update together; the editor advances to the next
@@ -35,17 +37,30 @@ These are manual classifications. The app does not detect the outcome from video
 An unchecked valid clip still contributes to the match; a rejected detection
 does not. Redo also contributes no point or player statistics.
 
-The touch log is optional for basic classification. Open **Optional touch details
-for percentages / RPR** when you want the richer statistics. Its video preview
-and four player buttons let you record serve, receive, set, hit, and defense in
-touch order. Classified clips use the inferred server and receiver; change an
-earlier outcome or match setup to correct that assignment. Undo touch
-reverses a quick action. To calculate full rates and RPR, record every serve
-attempt and touch, including multiple possessions and both partners'
-contributions. Optional source timestamps allow jumping back to a touch. A let
-is not a serve attempt; record individual faults, including rim when relevant.
+In the browser editor, Defensive Hold, Defensive Break, and Error open a required
+possession log. Start with the inferred receiver, then add the first-touch player
+for each alternating possession. The first-touch player is the suggested hitter;
+change that suggestion for hits on one or two. Select the final put-away player
+and whether an opponent touched that hit. Error instead requires its player and
+receive, set, or hit type. Save commits the outcome and player evidence together;
+Cancel keeps the previous saved point, and Undo restores both in one step.
 
-After a receive or defense, the editor suggests a set by the partner, then a hit.
+Quick logs default to one successful serve and no costly weak touches. Correct
+first-serve faults, rims, lets, or costly receives/sets in the inline editor.
+Ordinary possessions with the same first-touch player and hitter assume a partner
+set; touch grades remain ungraded. These assumptions are saved separately from
+player selections. Ace, Double Fault, Service Break, and Sideout default to no
+rally: an ace serve, two faults, a failed receive, or a receiving-player put-away,
+respectively. Redo has no point statistics. Edit quick log reopens the saved
+selections. Full touch details allow correcting unusual player roles and adding
+receive/set grades; converting a quick log to a full log requires grading or
+completing its remaining evidence before full-log RPR eligibility.
+
+The full touch log remains available in More details. In the legacy desktop
+editor it is optional for classification. Log every serve attempt and touch,
+including multiple possessions and both partners' contributions. Optional source
+timestamps allow jumping back to a touch. A let is not a serve attempt.
+
 These are editable suggestions, not enforced three-touch patterns. A player may
 hit on the first or second contact. Use Receive for the serve, Defense for a hit.
 When one physical contact both receives/defends and hits back onto the net, log
@@ -142,14 +157,21 @@ The approximate 20/30/30/20 category contributions are already in these equation
 they are not multiplied in a second time. Values are not clamped: RPR can exceed
 100, and Efficiency can be negative. Defense scales down for matches over 44 points.
 
-RPR is shown only after all non-rejected, non-redo points have complete touch
-logs, none has an unknown result or invalid sequence, initial scores are 0–0,
-and you explicitly confirm the whole match in Match statistics. Each player's
+RPR recalculates automatically after each point when all recorded winners have
+complete, valid RPR evidence and initial scores are 0–0. Empty future clips do
+not block the running calculation. The card labels it "RPR so far" until every
+outcome is known and you confirm the whole match in Match statistics. Each player's
 rating additionally
 requires at least one serve attempt and one hit attempt; undefined divisions
-show a dash. Changes to scoring or touch evidence invalidate the match-level
-confirmation; starring a highlight does not. Classification alone cannot supply
-the serve, hit, set, and defense evidence needed for RPR. This is a statistical
+show a dash. Changes to scoring or touch evidence recalculate RPR and invalidate the
+final-match label; starring a highlight does not. Quick logs can supply RPR evidence using the visible defaults. Ungraded
+receive/set quality does not block quick-log RPR; those quality percentages and
+physical-contact error rates remain unknown. Full logs retain their stricter
+completeness requirements. The report separates RPR coverage from fully graded
+touch coverage. On opening a saved project, quick logs with outdated inferred server/receiver
+roles regenerate their derived events when the stored player selections still
+form a valid point. Full touch observations and incompatible selections remain
+unchanged and are flagged for review. This is a statistical
 performance model, not a USAR skill level or a prediction of future ability.
 
 ## Reviewing, saving, and sharing
@@ -167,7 +189,8 @@ Older projects open with their existing tags and empty touch logs when none were
 saved. Splitting or merging an annotated point asks first and clears its
 classification and touch logs; Undo restores them. Source replacement
 clears old classifications and touch evidence. Boundary edits that strand a timestamp are flagged.
-Video exports append the same final-score, four-player card as the shareable PNG.
+Video exports append the same current-score, four-player card as the shareable PNG
+by default, with an explicit option to omit it.
 It includes percentages and the four RPR components. Preview it in the export
 dialog and set its duration from 1 to 30 seconds. If any outcome is unresolved,
 the card labels its score as recorded and shows dependent player totals as

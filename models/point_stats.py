@@ -57,6 +57,9 @@ def normalize_point_stats(value):
     normalized = {"version": 1, "complete": complete,
                   "server_id": value.get("server_id", ""), "receiver_id": value.get("receiver_id", ""),
                   "events": deepcopy(value.get("events", []))}
+    if "quick_log" in value:
+        from .quick_stats import normalize_quick_log
+        normalized["quick_log"] = normalize_quick_log(value["quick_log"])
     for field in ("server_id", "receiver_id"):
         if normalized[field] not in ("", *PLAYER_IDS):
             raise ValueError(f"Unknown {field}")

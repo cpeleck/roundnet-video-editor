@@ -535,6 +535,7 @@ class ProjectWorkflow:
         """Refresh compatibility score/caption fields from canonical clip labels."""
         if not self.rallies or not self.match_settings.get("setup_complete", False):
             return
+        from models.quick_stats import reconcile_quick_stats
         roster = {p["player_id"]: p["name"] for p in normalize_roster(self.match_settings.get("players"))}
         for row in match_timeline(self.rallies, self.match_settings):
             rally = self.rallies[row["index"]]
@@ -549,9 +550,13 @@ class ProjectWorkflow:
                 actor = ""
             outcome = "Replay / no point" if kind == "redo" else CLASSIFICATIONS[kind]["label"]
             player = roster.get(actor, "")
-            if (rally.winner, rally.outcome, rally.player) != (row["winner"], outcome, player):
+            point = reconcile_quick_stats(rally.point_stats, classification, row,
+                                          start=rally.start_time, end=rally.end_time)
+            if point != rally.point_stats:
+                self.match_settings["stats_complete"] = False
+            if (rally.winner, rally.outcome, rally.player, rally.point_stats) != (row["winner"], outcome, player, point):
                 self.rallies[row["index"]] = replace(rally, winner=row["winner"], outcome=outcome,
-                                                      player=player)
+                                                      player=player, point_stats=point)
 
     def classify_selected(self, kind):
         rally = self._selected()

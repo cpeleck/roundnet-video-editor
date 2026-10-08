@@ -119,11 +119,12 @@ def match_timeline(rallies: list[Any], settings: Mapping[str, Any]) -> list[dict
 
     server_partner = _partner(first_server)
     receiver_partner = _partner(first_receiver)
-    # IRF 4.2.1-4.2.2: opening server gets one point, then each player gets
-    # two. Each full turn switches receivers for its second serve.
-    server_cycle = (first_server, first_receiver, server_partner, receiver_partner)
-    first_receivers = (first_receiver, server_partner, receiver_partner, first_server)
-    second_receivers = (receiver_partner, first_server, first_receiver, server_partner)
+    # Opening server gets one point, then each player gets two. The next
+    # turn belongs to the receiver's partner against the server's partner:
+    # A1 -> B1, B2 -> A2/A1, A2 -> B1/B2, B1 -> A1/A2.
+    server_cycle = (first_server, receiver_partner, server_partner, first_receiver)
+    first_receivers = (first_receiver, server_partner, first_receiver, first_server)
+    second_receivers = (receiver_partner, first_server, receiver_partner, server_partner)
     turn = 0
     serve_in_turn = 0
     scored_index = 0

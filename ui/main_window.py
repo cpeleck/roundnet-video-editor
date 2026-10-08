@@ -195,12 +195,13 @@ class ExportDialog(QDialog):
         self.highlights_checkbox = QCheckBox("Only export starred, enabled rallies")
         self.scoreboard_checkbox = QCheckBox("Show score from manually tagged point winners")
         self.stats_checkbox = QCheckBox("Add final-score and four-player end card")
+        self.stats_checkbox.setChecked(True)
         self.stats_duration = QDoubleSpinBox()
         self.stats_duration.setRange(1.0, 30.0)
         self.stats_duration.setSingleStep(0.5)
         self.stats_duration.setValue(5.0)
         self.stats_duration.setSuffix(" seconds")
-        self.stats_duration.setEnabled(False)
+        self.stats_duration.setEnabled(True)
         self.stats_preview = QLabel()
         self.stats_preview.setMinimumHeight(240)
         self.stats_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -243,8 +244,7 @@ class ExportDialog(QDialog):
         layout.addWidget(self.stats_preview)
         layout.addSpacing(8)
         layout.addWidget(buttons)
-        if parent and any(getattr(r, "point_stats", {}).get("events") for r in getattr(parent, "rallies", [])):
-            self.stats_checkbox.setChecked(True)
+        self._refresh_stats_preview(True)
 
     @property
     def output_path(self) -> str:

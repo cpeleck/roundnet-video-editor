@@ -13,3 +13,6 @@ dist/
 exports/
 .roundnet/
 *.roundnet-labels.json
+node_modules/
+.pnpm-store/
+frontend/dist/

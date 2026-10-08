@@ -145,11 +145,11 @@ def test_native_clip_outcomes_drive_score_order_and_undo(window):
     assert not editor.rallies[0].point_stats
     assert editor.selected_rally_index == 1
     assert "1 : 0" in editor.match_score_label.text()
-    assert match_timeline(editor.rallies, editor.match_settings)[1]["server_id"] == "B1"
+    assert match_timeline(editor.rallies, editor.match_settings)[1]["server_id"] == "B2"
 
     editor.classify_selected("redo")
     assert editor.selected_rally_index == 2
-    assert match_timeline(editor.rallies, editor.match_settings)[2]["server_id"] == "B1"
+    assert match_timeline(editor.rallies, editor.match_settings)[2]["server_id"] == "B2"
     editor.classify_selected("double_fault")
     assert editor.rallies[2].winner == "A"
     assert "2 : 0" in editor.match_score_label.text()
@@ -553,8 +553,10 @@ def test_native_statistics_tabs_exports_confirmation_and_point_navigation(window
         dialog.show()
         assert dialog.tabs.count() == 8
         assert dialog.report["coverage"]["complete"] == 4
-        assert dialog.report["players"][0]["rpr"]["overall"] is None
+        assert all(p["rpr"]["overall"] is not None for p in dialog.report["players"])
+        assert not dialog.report["rpr_final"]
         dialog.complete.setChecked(True)
+        assert dialog.report["rpr_final"]
         assert all(p["rpr"]["overall"] is not None for p in dialog.report["players"])
         app.processEvents()
         assert dialog.grab().save(str(tmp_path / "statistics-dialog.png"))
