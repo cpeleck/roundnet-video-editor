@@ -30,3 +30,17 @@ test('reopening a quick log preserves selections, corrections, and entry undo', 
   expect(screen.queryByLabelText('First touch 3')).toBeNull();
   expect((screen.getByLabelText('Final defender') as HTMLSelectElement).value).toBe('B1');
 });
+
+test('an outdated receiver can be corrected without replacing the recorded hitter', async () => {
+  const save = vi.fn().mockResolvedValue(undefined);
+  const old = { ...rally, classification: { kind: 'defensive_hold' }, point_stats: { quick_log: { version: 1, possessions: [{ first_touch_id: 'B2', hitter_id: 'B2' }, { first_touch_id: 'A2', hitter_id: 'A1' }], error: null, terminal_defender_id: null, serve_faults: [] } } } as Rally;
+  render(<QuickLogEditor project={project} assignment={assignment} rally={old} kind="defensive_hold" busy={false} onSave={save} onCancel={() => {}} onReplay={() => {}}/>);
+  expect(screen.getByRole('alert').textContent).toContain('Correct First touch 1 to B1');
+  expect((button('Save point & continue') as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText('First touch 1'), { target: { value: 'B1' } });
+  expect((screen.getByLabelText('Hitter 1') as HTMLSelectElement).value).toBe('B2');
+  expect((screen.getByLabelText('First touch 1') as HTMLSelectElement).disabled).toBe(true);
+  fireEvent.click(button('Save point & continue'));
+  await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ possessions: [
+    { first_touch_id: 'B1', hitter_id: 'B2' }, { first_touch_id: 'A2', hitter_id: 'A1' }] })));
+});

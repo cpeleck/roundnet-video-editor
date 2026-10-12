@@ -7,6 +7,7 @@ const paths: Record<string, string> = {
   stats: 'M5 20V10m7 10V4m7 16v-7', settings: 'M4 7h16M4 17h16M8 4v6m8 4v6',
   export: 'M12 15V3m-4 4 4-4 4 4M4 13v8h16v-8', video: 'M3 5h13v14H3Zm13 5 5-3v10l-5-3',
   clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0', chevron: 'm6 9 6 6 6-6',
+  trash: 'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6m4-6v6',
   grid: 'M3 3h7v7H3Zm11 0h7v7h-7ZM3 14h7v7H3Zm11 0h7v7h-7Z',
 };
 export function Icon({ name, size = 18, style }: { name: string; size?: number; style?: CSSProperties }) {

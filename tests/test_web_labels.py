@@ -114,3 +114,36 @@ def test_training_confirmation_persists_and_clip_edits_clear_it(tmp_path):
     edited = restarted.command(identity, {"type": "trim", "rally_id": project["rallies"][0]["rally_id"],
                                           "start_time": .6, "end_time": 2.5})
     assert not edited["complete"] and not edited["complete_review_confirmed"]
+
+
+def test_http_delete_does_not_label_removed_footage_as_not_a_rally(tmp_path):
+    service, project, _ = _project(tmp_path)
+    first = project['rallies'][0]
+    with TestClient(create_app(service=service)) as client:
+        response = client.post(f"/api/projects/{project['project_id']}/commands", json={
+            'type': 'delete', 'rally_id': first['rally_id'], 'revision': project['revision']})
+        assert response.status_code == 200, response.text
+        deleted = response.json()
+        assert len(deleted['rallies']) == 3
+        _, bundle = _download(client, deleted)
+        metadata = json.loads(bundle.read('corrections.json'))
+        assert len(metadata['initial_predictions']) == 4
+        assert len(metadata['rejected_detections']) == 1
+        assert metadata['rejected_detections'][0]['rejection_id'] != first['rally_id']
+        features = np.load(BytesIO(bundle.read('corrections.npz')), allow_pickle=False)
+        assert features['labels'][3] == -1  # Deleted point is unknown footage.
+        assert features['labels'][9] == 0   # Existing explicit rejection remains.
+
+
+def test_delete_clears_legacy_rejection_for_the_same_clip(tmp_path):
+    from backend.labels import _rejections
+    service, project, _ = _project(tmp_path)
+    rejected = project['rallies'][1]
+    state = service.get(project['project_id']).state
+    state['rejected_detections'] = [dict(rejected, reason='legacy_rejection')]
+    deleted = service.command(project['project_id'], {'type': 'delete', 'rally_id': rejected['rally_id']})
+    assert deleted['rejected_detections'] == []
+    assert _rejections(deleted) == []
+    restored = service.command(project['project_id'], {'type': 'undo'})
+    assert restored['rallies'][1]['rejected']
+    assert len(_rejections(restored)) == 1

@@ -109,11 +109,13 @@ def test_card_preview_matches_final_renderer_even_when_reel_trim_reorders_points
     first, second = service.get_state(identity)["rallies"]
     service.command(identity, {"type": "classify", "rally_id": first["rally_id"], "kind": "ace"})
     service.command(identity, {"type": "classify", "rally_id": second["rally_id"], "kind": "double_fault"})
+    service.command(identity, {"type": "export_settings", "settings": {"resolution": "2160p", "frame_rate": 60}})
     state = service.get_state(identity)
     manager = JobManager(service)
     media = MediaService(service, manager)
     try:
         preview = media.card(identity)
+        assert cv2.imread(str(preview)).shape[:2] == (2160, 3840)
         payload = prepare_export(state, {"mode": "highlights", "output_path": str(tmp_path / "render.mp4"),
             "options": {"include_stats": True, "stats_duration": 3},
             "queue": [{"rally_id": second["rally_id"], "start_time": 0, "end_time": .3}]})
@@ -124,6 +126,8 @@ def test_card_preview_matches_final_renderer_even_when_reel_trim_reorders_points
             probe_video_metadata(recording), payload["options"], payload["presentation_rallies"])
         assert paths[-1].read_bytes() == preview.read_bytes()
         assert filters["stats_duration"] == 3
+        assert filters["output_size"] == (3840, 2160)
+        assert filters["output_fps"] == 60
         assert match_statistics(payload["presentation_rallies"], payload["options"]) == match_statistics(state["rallies"], payload["options"])
     finally:
         manager.close()

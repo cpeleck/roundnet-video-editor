@@ -14,6 +14,16 @@ from models.rally import Rally
 SETTINGS = {"starting_server": "A1", "starting_receiver": "B1"}
 
 
+def assert_distinct_consecutive_pairs(rows):
+    """One player may repeat; both players together cannot repeat in regular play."""
+    points = [row for row in rows if row['winner']]
+    for previous, following in zip(points, points[1:]):
+        previous_names = {previous['server_id'], previous['receiver_id']}
+        next_names = {following['server_id'], following['receiver_id']}
+        assert len(previous_names & next_names) < 2, (
+            f"The same serving pair appears in consecutive points: {previous_names} then {next_names}")
+
+
 def clip(start, kind=None, **extra):
     result = {"start_time": start, "rally_id": f"clip-{start}", **extra}
     if kind is not None:
@@ -115,6 +125,28 @@ def test_redo_and_rejected_clip_preserve_score_and_serving_order():
     assert all(not row["provisional"] for row in rows)
 
 
+def test_completed_clip_state_includes_its_point_and_next_serving_pair():
+    rows = match_timeline([clip(0, "ace"), clip(1, "redo"), clip(2, "ace", rejected=True),
+                          clip(3, "ace", enabled=False), clip(4, "ace")], SETTINGS)
+    for current, following in zip(rows, rows[1:]):
+        assert current["score_after"] == following["score_before"]
+        assert (current["next_server_id"], current["next_receiver_id"]) == (following["server_id"], following["receiver_id"])
+    assert rows[0]["score_after"] == (1, 0)
+    assert rows[1]["score_after"] == rows[2]["score_after"] == (1, 0)
+    assert rows[-1]["score_after"] == (1, 2)
+    assert (rows[-1]["next_server_id"], rows[-1]["next_receiver_id"]) == ("A2", "B1")
+
+
+def test_completed_clip_serving_pair_respects_overtime_and_unknown_points():
+    settings = {**SETTINGS, "initial_score_a": 20, "initial_score_b": 20}
+    rows = match_timeline([clip(0, "ace"), clip(1, "ace")], settings)
+    assert (rows[-1]["next_server_id"], rows[-1]["next_receiver_id"]) == ("A2", "B1")
+    unknown = match_timeline([clip(0)], SETTINGS)[0]
+    assert unknown["score_after"] == (0, 0)
+    assert (unknown["next_server_id"], unknown["next_receiver_id"]) == ("A1", "B1")
+    assert unknown["provisional_after"]
+
+
 def test_new_classification_overrides_an_old_replay_tag():
     row = match_timeline([clip(0, "ace", outcome="Replay / no point", winner="B")], SETTINGS)[0]
     assert row["winner"] == "A"
@@ -181,3 +213,43 @@ def test_next_turn_is_receiver_partner_against_server_partner(server, receiver):
                           {'starting_server': server, 'starting_receiver': receiver})
     assert (rows[1]['server_id'], rows[1]['receiver_id']) == (partner(receiver), partner(server))
     assert (rows[2]['server_id'], rows[2]['receiver_id']) == (partner(receiver), partner(server))
+
+
+@pytest.mark.parametrize('server,receiver', [
+    (s, r) for s in ('A1', 'A2', 'B1', 'B2')
+    for r in ('A1', 'A2', 'B1', 'B2') if s[0] != r[0]
+])
+def test_user_example_for_two_cycles_with_mixed_winners(server, receiver):
+    # The user's names: A/B are teammates, C/D are teammates, B opens to C.
+    partner = lambda pid: pid[0] + ('2' if pid[1] == '1' else '1')
+    names = {'A': partner(server), 'B': server, 'C': receiver, 'D': partner(receiver)}
+    expected = [('B', 'C'), ('D', 'A'), ('D', 'B'), ('A', 'C'), ('A', 'D'),
+                ('C', 'B'), ('C', 'A'), ('B', 'C'), ('B', 'D'),
+                ('D', 'A'), ('D', 'B'), ('A', 'C'), ('A', 'D'),
+                ('C', 'B'), ('C', 'A'), ('B', 'C'), ('B', 'D')]
+    kinds = ['ace', 'sideout', 'double_fault', 'service_break', 'sideout']
+    rows = match_timeline([clip(n, kinds[n % len(kinds)]) for n in range(len(expected))],
+                          {'starting_server': server, 'starting_receiver': receiver})
+    assert [(r['server_id'], r['receiver_id']) for r in rows] == [
+        (names[s], names[r]) for s, r in expected]
+    assert [sum(r['score_before']) for r in rows] == list(range(len(expected)))
+    assert {r['winner'] for r in rows} == {'A', 'B'}
+    assert_distinct_consecutive_pairs(rows)
+
+
+def test_pair_check_skips_redo_and_rejected_clips_but_counts_export_exclusions():
+    rallies = []
+    for n in range(10):
+        rallies.extend([clip(3 * n, 'ace', enabled=n % 2 == 0),
+                        clip(3 * n + 1, 'redo'), clip(3 * n + 2, 'ace', rejected=True)])
+    rows = match_timeline(rallies, SETTINGS)
+    assert sum(bool(row['winner']) for row in rows) == 10
+    assert_distinct_consecutive_pairs(rows)
+
+
+@pytest.mark.parametrize('following', [('A1', 'B1'), ('B1', 'A1')])
+def test_pair_check_catches_the_same_two_people_even_with_roles_reversed(following):
+    rows = [dict(server_id='A1', receiver_id='B1', winner='A'),
+            dict(server_id=following[0], receiver_id=following[1], winner='B')]
+    with pytest.raises(AssertionError, match='same serving pair'):
+        assert_distinct_consecutive_pairs(rows)

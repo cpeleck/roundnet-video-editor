@@ -30,6 +30,7 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         "players": None, "stats_complete": False, "stats_duration": 5.0,
         "starting_server": "A1", "starting_receiver": "B1", "target_score": 21,
         "setup_complete": True,
+        "resolution": "source", "frame_rate": "source",
     }
     if options:
         unknown = set(options) - set(result)
@@ -38,6 +39,13 @@ def prepare_export_options(options: Mapping[str, Any] | None = None) -> dict[str
         result.update(options)
     if result["aspect_ratio"] not in {"source", "16:9", "9:16", "1:1"}:
         raise ValueError("aspect_ratio must be source, 16:9, 9:16, or 1:1")
+    if result["resolution"] not in {"source", "720p", "1080p", "1440p", "2160p"}:
+        raise ValueError("resolution must be source, 720p, 1080p, 1440p, or 2160p (4K)")
+    rate = result["frame_rate"]
+    if rate != "source":
+        if isinstance(rate, bool) or not isinstance(rate, (int, float)) or not math.isfinite(rate) or not 1 <= rate <= 60:
+            raise ValueError("frame_rate must be source or a number between 1 and 60 fps")
+        result["frame_rate"] = float(rate)
     for name in ("highlights_only", "scoreboard", "include_stats", "include_notes", "stats_complete", "setup_complete"):
         if not isinstance(result[name], bool):
             raise ValueError(f"{name} must be a boolean")
@@ -76,6 +84,15 @@ def scores_before_rallies(rallies: Sequence[object], options: Mapping[str, Any])
     """Map original list indices to the score immediately before each point."""
     from models.match_flow import match_timeline
     return {row["index"]: row["score_before"] for row in match_timeline(list(rallies), options)}
+
+
+def scorecard_lines(assignment: Mapping[str, Any], options: Mapping[str, Any], *, completed: bool = False) -> list[str]:
+    """The team score shown on the video, without editing-only serving details."""
+    a, b = assignment["score_after" if completed else "score_before"]
+    lines = [f"{options['team_a']} {a} | {options['team_b']} {b}"]
+    if assignment["provisional_after" if completed else "provisional"]:
+        lines.append("Score provisional")
+    return lines
 
 
 def match_statistics(rallies: Iterable[object], options: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -135,6 +152,18 @@ def crop_dimensions(width: int, height: int, aspect_ratio: str) -> tuple[int, in
     if scale < 1:
         raise ValueError("Video is too small for the requested crop")
     return 2 * rw * scale, 2 * rh * scale
+
+
+def export_dimensions(width: int, height: int, aspect_ratio: str, resolution: str = "source") -> tuple[int, int]:
+    """Size the crop for export; portrait presets use the landscape box rotated."""
+    cw, ch = crop_dimensions(width, height, aspect_ratio)
+    if resolution == "source":
+        return cw, ch
+    short_edge = {"720p": 720, "1080p": 1080, "1440p": 1440, "2160p": 2160}[resolution]
+    long_edge = short_edge * 16 // 9
+    bounds = (long_edge, short_edge) if cw >= ch else (short_edge, long_edge)
+    scale = min(bounds[0] / cw, bounds[1] / ch)
+    return max(2, round(cw * scale / 2) * 2), max(2, round(ch * scale / 2) * 2)
 
 
 def _center_expression(keyframes: Sequence[Mapping[str, Any]], axis: str, start: float) -> str:
@@ -201,6 +230,57 @@ def render_card(path: Path, width: int, height: int, lines: Sequence[str], *, tr
         while cv2.getTextSize(ascii_text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0] > width - 2 * padding and len(ascii_text) > 4:
             ascii_text = ascii_text[:-4] + "..."
         cv2.putText(image, ascii_text, (padding, int((index + 0.66) * row)), cv2.FONT_HERSHEY_SIMPLEX, scale, (244, 247, 238, 255), 1, cv2.LINE_AA)
+    if not cv2.imwrite(str(path), image):
+        raise OSError(f"Cannot write export artwork: {path}")
+
+
+def render_overlay_card(path: Path, max_width: int, font_size: int, lines: Sequence[str]) -> None:
+    """Render a compact overlay with measured text and only a small inset."""
+    padding = max(3, round(font_size * .4))
+    gap = max(2, round(font_size * .2))
+    available = max(1, max_width - 2 * padding)
+    from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QImage, QPainter
+    if QGuiApplication.instance() is not None:
+        from PySide6.QtCore import Qt
+        font = QFont("Arial")
+        font.setPixelSize(font_size)
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        text = [metrics.elidedText(str(line), Qt.TextElideMode.ElideRight, available) for line in lines]
+        width = min(max_width, max((metrics.horizontalAdvance(line) for line in text), default=0) + 2 * padding)
+        height = 2 * padding + metrics.height() * len(text) + gap * max(0, len(text) - 1)
+        image = QImage(max(2, width), max(2, height), QImage.Format.Format_ARGB32)
+        image.fill(QColor(17, 25, 35, 226))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        painter.setFont(font)
+        painter.setPen(QColor(238, 247, 244))
+        for index, line in enumerate(text):
+            painter.drawText(padding, padding + metrics.ascent() + index * (metrics.height() + gap), line)
+        painter.end()
+        if not image.save(str(path), "PNG"):
+            raise OSError(f"Cannot write export artwork: {path}")
+        return
+    thickness = max(1, round(font_size / 18))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    scale = cv2.getFontScaleFromHeight(font, font_size, thickness)
+    text = []
+    for line in lines:
+        line = unicodedata.normalize("NFKD", str(line)).encode("ascii", "replace").decode("ascii")
+        if cv2.getTextSize(line, font, scale, thickness)[0][0] > available:
+            while line and cv2.getTextSize(line + "...", font, scale, thickness)[0][0] > available:
+                line = line[:-1]
+            line += "..."
+        text.append(line)
+    sizes = [cv2.getTextSize(line, font, scale, thickness)[0][0] for line in text]
+    (_, glyph_height), baseline = cv2.getTextSize("Ag", font, scale, thickness)
+    row_height = glyph_height + baseline
+    width = min(max_width, max(sizes, default=0) + 2 * padding)
+    height = 2 * padding + row_height * len(text) + gap * max(0, len(text) - 1)
+    image = np.full((max(2, height), max(2, width), 4), (35, 25, 17, 226), dtype=np.uint8)
+    for index, line in enumerate(text):
+        cv2.putText(image, line, (padding, padding + glyph_height + index * (row_height + gap)),
+                    font, scale, (244, 247, 238, 255), thickness, cv2.LINE_AA)
     if not cv2.imwrite(str(path), image):
         raise OSError(f"Cannot write export artwork: {path}")
 

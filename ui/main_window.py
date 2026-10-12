@@ -169,8 +169,8 @@ class ExportDialog(QDialog):
 
         summary = QLabel(
             f"Export <b>{rally_count}</b> enabled rallies totaling "
-            f"<b>{format_timestamp(duration)}</b>. Original resolution, frame rate, and audio are preserved "
-            "where the source codec permits."
+            f"<b>{format_timestamp(duration)}</b>. Choose source settings or export up to 4K and 60 fps. "
+            "Upscaling adds no source detail; higher frame rates repeat frames. Original audio is included when available."
         )
         summary.setWordWrap(True)
 
@@ -192,6 +192,14 @@ class ExportDialog(QDialog):
         for label, ratio in (("Original framing", "source"), ("Landscape · 16:9", "16:9"),
                              ("Portrait · 9:16", "9:16"), ("Square · 1:1", "1:1")):
             self.aspect_combo.addItem(label, ratio)
+        self.resolution_combo = QComboBox()
+        for label, value in (("Original resolution", "source"), ("HD · 720p", "720p"),
+                             ("Full HD · 1080p", "1080p"), ("1440p", "1440p"), ("4K · 2160p", "2160p")):
+            self.resolution_combo.addItem(label, value)
+        self.frame_rate_combo = QComboBox()
+        self.frame_rate_combo.addItem("Original frame rate", "source")
+        for rate in (24, 25, 30, 50, 60):
+            self.frame_rate_combo.addItem(f"{rate} fps", rate)
         self.highlights_checkbox = QCheckBox("Only export starred, enabled rallies")
         self.scoreboard_checkbox = QCheckBox("Show score from manually tagged point winners")
         self.stats_checkbox = QCheckBox("Add final-score and four-player end card")
@@ -209,6 +217,7 @@ class ExportDialog(QDialog):
         self.stats_checkbox.toggled.connect(self.stats_duration.setEnabled)
         self.stats_checkbox.toggled.connect(self._refresh_stats_preview)
         self.aspect_combo.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview(self.stats_checkbox.isChecked()))
+        self.resolution_combo.currentIndexChanged.connect(lambda *_: self._refresh_stats_preview(self.stats_checkbox.isChecked()))
         self.notes_checkbox = QCheckBox("Show rally captions")
         self.overlay_edit = QLineEdit()
         self.overlay_edit.setPlaceholderText("Optional transparent PNG logo / branding")
@@ -223,6 +232,8 @@ class ExportDialog(QDialog):
         form.addRow("Encoding", self.hardware_checkbox)
         form.addRow("Training data", self.labels_checkbox)
         form.addRow("Framing", self.aspect_combo)
+        form.addRow("Resolution", self.resolution_combo)
+        form.addRow("Frame rate", self.frame_rate_combo)
         form.addRow("Highlights", self.highlights_checkbox)
         form.addRow("Scoreboard", self.scoreboard_checkbox)
         form.addRow("Statistics", self.stats_checkbox)
@@ -264,6 +275,8 @@ class ExportDialog(QDialog):
     @property
     def export_options(self) -> dict[str, Any]:
         return {"aspect_ratio": self.aspect_combo.currentData(),
+                "resolution": self.resolution_combo.currentData(),
+                "frame_rate": self.frame_rate_combo.currentData(),
                 "highlights_only": self.highlights_checkbox.isChecked(),
                 "scoreboard": self.scoreboard_checkbox.isChecked(),
                 "include_stats": self.stats_checkbox.isChecked(),
@@ -275,12 +288,12 @@ class ExportDialog(QDialog):
         self.stats_preview.setVisible(enabled)
         if not enabled or self.parent() is None:
             return
-        from video.presentation import crop_dimensions, match_statistics, render_player_end_card_image
+        from video.presentation import export_dimensions, match_statistics, render_player_end_card_image
         parent = self.parent()
         summary = match_statistics(parent.rallies, parent.match_settings)
         source_width = int(_metadata_value(parent.video_metadata, "width", default=960) or 960)
         source_height = int(_metadata_value(parent.video_metadata, "height", default=540) or 540)
-        width, height = crop_dimensions(source_width, source_height, self.aspect_combo.currentData())
+        width, height = export_dimensions(source_width, source_height, self.aspect_combo.currentData(), self.resolution_combo.currentData())
         preview_scale = 960 / max(width, height)
         width, height = max(2, round(width * preview_scale)), max(2, round(height * preview_scale))
         frame = render_player_end_card_image(width, height, summary)

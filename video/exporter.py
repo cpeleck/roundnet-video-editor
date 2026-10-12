@@ -25,8 +25,8 @@ from .errors import (
 )
 from .metadata import VideoMetadata, probe_video_metadata
 from .presentation import (
-    crop_dimensions, crop_filter, field, match_statistics,
-    prepare_export_options, render_card, render_player_end_card, scores_before_rallies,
+    export_dimensions, crop_filter, field, match_statistics,
+    prepare_export_options, render_overlay_card, render_player_end_card, scorecard_lines,
 )
 
 
@@ -209,11 +209,13 @@ def build_filter_complex(
     stats_duration: float = 5.0,
     output_size: tuple[int, int] | None = None,
     fps: float = 30,
+    output_fps: float | None = None,
 ) -> str:
     """Build the trim/concat graph used for an exact, single-pass export."""
 
     if not segments:
         raise ValueError("At least one export segment is required")
+    output_label = "vconverted" if output_fps is not None else "vout"
     filters: list[str] = []
     concat_inputs: list[str] = []
     for index, segment in enumerate(segments):
@@ -236,7 +238,7 @@ def build_filter_complex(
                 f"asetpts=PTS-STARTPTS[a{index}]"
             )
             concat_inputs.append(f"[a{index}]")
-    video_label = "vcut" if custom_overlay_input is not None or stats_input is not None else "vout"
+    video_label = "vcut" if custom_overlay_input is not None or stats_input is not None else output_label
     audio_label = "acut" if stats_input is not None else "aout"
     if has_audio:
         concat = (
@@ -251,7 +253,7 @@ def build_filter_complex(
         logo_width = max(2, int(width * .25))
         logo_height = max(2, int(height * .25))
         filters.append(f"[{custom_overlay_input}:v:0]scale={logo_width}:{logo_height}:force_original_aspect_ratio=decrease[logo]")
-        next_label = "vbranded" if stats_input is not None else "vout"
+        next_label = "vbranded" if stats_input is not None else output_label
         padding = max(4, int(width * .025))
         filters.append(f"[{video_label}][logo]overlay=x=W-w-{padding}:y=H-h-{padding}:eof_action=repeat:shortest=0[{next_label}]")
         video_label = next_label
@@ -259,9 +261,13 @@ def build_filter_complex(
         filters.append(f"[{stats_input}:v:0]loop=loop=-1:size=1:start=0,setpts=N/(25*TB),trim=duration={stats_duration:.3f},fps={fps:.9f},setsar=1[statsv]")
         if has_audio:
             filters.append(f"anullsrc=r=48000:cl=stereo,atrim=duration={stats_duration:.3f},asetpts=PTS-STARTPTS[statsa]")
-            filters.append(f"[{video_label}][{audio_label}][statsv][statsa]concat=n=2:v=1:a=1[vout][aout]")
+            filters.append(f"[{video_label}][{audio_label}][statsv][statsa]concat=n=2:v=1:a=1[{output_label}][aout]")
         else:
-            filters.append(f"[{video_label}][statsv]concat=n=2:v=1:a=0[vout]")
+            filters.append(f"[{video_label}][statsv]concat=n=2:v=1:a=0[{output_label}]")
+    if output_fps is not None:
+        # Convert once after all clips and the end card to keep one continuous
+        # frame grid across cuts, including non-frame-aligned source trims.
+        filters.append(f"[{output_label}]fps={output_fps:.9f}[vout]")
     return ";".join(filters)
 
 
@@ -373,29 +379,28 @@ def _prepare_presentation(
     presentation_rallies: Sequence[object] | None = None,
 ) -> tuple[list[Path], dict[str, Any]]:
     """Build optional artwork once so hardware retry reuses identical content."""
-    active = options["aspect_ratio"] != "source" or any(options[key] for key in
-        ("scoreboard", "include_notes", "include_stats", "overlay_path"))
+    active = any(options[key] != "source" for key in ("aspect_ratio", "resolution", "frame_rate")) or any(
+        options[key] for key in ("scoreboard", "include_notes", "include_stats", "overlay_path"))
     if not active:
         return [], {}
     source_width, source_height = metadata.display_resolution
-    width, height = crop_dimensions(source_width, source_height, options["aspect_ratio"])
+    width, height = export_dimensions(source_width, source_height, options["aspect_ratio"], options["resolution"])
+    output_fps = None if options["frame_rate"] == "source" else options["frame_rate"]
     images: list[Path] = []
     video_filters: dict[int, str] = {}
     overlays: dict[int, int] = {}
     canonical_rallies = list(presentation_rallies) if presentation_rallies is not None else rallies
-    scores = scores_before_rallies(canonical_rallies, options)
     from models.match_flow import match_timeline
-    provisional_scores = {row["index"] for row in match_timeline(list(canonical_rallies), options) if row["provisional"]}
+    assignments = {row["index"]: row for row in match_timeline(list(canonical_rallies), options)}
     for index, segment in enumerate(segments):
         rally = rallies[segment.source_index]
         video_filters[index] = crop_filter(source_width, source_height,
             options["aspect_ratio"], field(rally, "crop_keyframes", []), segment.start)
+        if options["resolution"] != "source":
+            video_filters[index] += f",scale={width}:{height}:flags=lanczos,setsar=1"
         lines: list[str] = []
         if options["scoreboard"]:
-            a, b = scores[segment.source_index]
-            lines.extend([f"{options['team_a']}  {a}", f"{options['team_b']}  {b}"])
-            if segment.source_index in provisional_scores:
-                lines.append("Score provisional")
+            lines.extend(scorecard_lines(assignments[segment.source_index], options))
         if options["include_notes"]:
             tag = " / ".join(str(field(rally, key, "")) for key in ("player", "outcome") if field(rally, key, ""))
             if tag:
@@ -404,13 +409,12 @@ def _prepare_presentation(
                 lines.append(str(field(rally, "note")))
         if lines:
             path = directory / f"rally-{index}.png"
-            card_width = max(2, min(width - 8, int(width * .75)))
-            card_height = max(20, int(min(height * .35, max(height * .055, width * .06) * len(lines))))
-            render_card(path, card_width, card_height, lines, transparent=True)
+            render_overlay_card(path, max(2, int(width * .45)), max(10, round(min(width, height) * .02)), lines)
             images.append(path)
             overlays[index] = len(images)
     filters: dict[str, Any] = {"video_filters": video_filters, "segment_overlays": overlays,
-                              "output_size": (width, height), "fps": metadata.fps or 30}
+                              "output_size": (width, height), "fps": output_fps or metadata.fps or 30,
+                              "output_fps": output_fps}
     if options["overlay_path"]:
         images.append(Path(options["overlay_path"]))
         filters["custom_overlay_input"] = len(images)

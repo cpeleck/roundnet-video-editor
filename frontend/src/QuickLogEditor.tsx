@@ -17,17 +17,22 @@ export function QuickLogEditor({ project, rally, assignment, kind, busy, onSave,
   const last = log.possessions.at(-1);
   const winningTeam = kind === 'defensive_hold' ? assignment.server_id[0] : assignment.receiver_id[0];
   const finalTeam = log.possessions.length % 2 ? assignment.receiver_id[0] : assignment.server_id[0];
-  const ready = !rallyKind || (log.possessions.every(p => p.first_touch_id && p.hitter_id) && (kind === 'error'
+  const receiverChanged = !!log.possessions.length && log.possessions[0].first_touch_id !== assignment.receiver_id;
+  const ready = !rallyKind || (log.possessions.every((p, i) => {
+    const team = i % 2 ? assignment.server_id[0] : assignment.receiver_id[0];
+    return p.first_touch_id[0] === team && p.hitter_id[0] === team && (i !== 0 || p.first_touch_id === assignment.receiver_id);
+  }) && (kind === 'error'
     ? !!log.error?.player_id && log.error.player_id[0] === finalTeam && (log.error.kind !== 'receive' || log.possessions.length === 1 && log.error.player_id === assignment.receiver_id)
     : log.possessions.length >= 2 && last?.hitter_id[0] === winningTeam));
   const options = (team: string) => players.filter(p => p.team === team).map(p => <option key={p.player_id} value={p.player_id}>{p.name}</option>);
-  return <section className="quick-log" aria-label="Guided possession log"><h2>{labelFor(kind)} · Player details</h2><p className="helper">Follow each possession in order. The first-touch player is the suggested hitter; correct hits on one or two. Ungraded touches stay ungraded.</p><button className="button small" onClick={onReplay} type="button">Replay this clip</button>
+  return <section className="quick-log" aria-label="Guided possession log"><h2>{labelFor(kind)} · Player details</h2><p className="helper">Follow each possession in order. The first-touch player is the suggested hitter; correct hits on one or two. Ungraded touches stay ungraded.</p><button className="button small" disabled={busy || saving} onClick={onReplay} type="button">Replay this clip</button>
     <fieldset disabled={busy || saving}>
+      {receiverChanged && <p className="warning-text" role="alert">The serving order changed. Correct First touch 1 to {players.find(p => p.player_id === assignment.receiver_id)?.name}, then review the other recorded players.</p>}
       {rallyKind && <><ol className="possession-list">{log.possessions.map((p, i) => {
         const team = i % 2 ? assignment.server_id[0] : assignment.receiver_id[0];
         const update = (fields: Partial<typeof p>) => change({ ...log, possessions: log.possessions.map((row, j) => j === i ? { ...row, ...fields } : row) });
         return <li key={i}><strong>{i + 1}. {i ? 'Defensive possession' : 'Serve receive'} · {team === 'A' ? project.match_settings.team_a : project.match_settings.team_b}</strong>
-          <label>First touch {i + 1}<select aria-label={`First touch ${i + 1}`} value={p.first_touch_id} disabled={i === 0} onChange={e => update({ first_touch_id: e.target.value, hitter_id: e.target.value })}><option value="">Choose player</option>{options(team)}</select></label>
+          <label>First touch {i + 1}<select aria-label={`First touch ${i + 1}`} value={p.first_touch_id} disabled={i === 0 && !receiverChanged} onChange={e => update({ first_touch_id: e.target.value, ...(i ? { hitter_id: e.target.value } : {}) })}><option value="">Choose player</option>{p.first_touch_id && p.first_touch_id[0] !== team && <option value={p.first_touch_id}>{players.find(v => v.player_id === p.first_touch_id)?.name} (previous log)</option>}{options(team)}</select></label>
           <label>{i === log.possessions.length - 1 && kind !== 'error' ? 'Who puts it away?' : 'Hitter'}<select aria-label={`Hitter ${i + 1}`} value={p.hitter_id} onChange={e => update({ hitter_id: e.target.value })}><option value="">Choose player</option>{options(team)}</select></label>
           <details><summary>Costly touch corrections</summary>{i === 0 && <label className="checkbox"><input type="checkbox" checked={!!p.tough_receive} onChange={e => update({ tough_receive: e.target.checked })}/>Costly weak receive</label>}<label className="checkbox"><input type="checkbox" checked={!!p.tough_set} onChange={e => update({ tough_set: e.target.checked })}/>Costly weak set by partner</label></details>
         </li>;

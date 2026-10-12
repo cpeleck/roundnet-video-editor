@@ -41,6 +41,143 @@ def edit(service, project, command_type, **changes):
     return service.command(project["project_id"], {"type": command_type, "revision": project["revision"], **changes})
 
 
+@pytest.mark.parametrize('count,index', [(4, 0), (4, 1), (4, 3), (1, 0)])
+def test_delete_removes_point_and_highlight_and_restores_with_undo(service, tmp_path, count, index):
+    from collections import Counter
+    project = new_project(service, tmp_path)
+    for i in range(count):
+        project = add(service, project, i * 5, i * 5 + 3)
+    for identity in [r['rally_id'] for r in project['rallies']]:
+        project = edit(service, project, 'classify', rally_id=identity, kind='ace',
+                       quick_log=dict(version=1, possessions=[], serve_faults=[], error=None, terminal_defender_id=None))
+    removed = project['rallies'][index]
+    project = edit(service, project, 'select', rally_id=removed['rally_id'])
+    project = edit(service, project, 'highlight_queue', clips=[{'rally_id': r['rally_id']} for r in project['rallies']])
+    project = edit(service, project, 'full_match', confirmed=True)
+    project = edit(service, project, 'complete_review', confirmed=True)
+    before = deepcopy(project)
+    deleted = edit(service, project, 'delete', rally_id=removed['rally_id'])
+    assert len(deleted['rallies']) == count - 1
+    assert removed['rally_id'] not in [r['rally_id'] for r in deleted['rallies']]
+    assert removed['rally_id'] not in [c['rally_id'] for c in deleted['highlight_queue']]
+    assert deleted['selected'] == min(index, count - 2)
+    assert deleted['position'] == removed['end_time']
+    assert deleted['rejected_detections'] == before['rejected_detections']
+    assert not deleted['match_settings']['stats_complete']
+    assert not deleted['complete_review_confirmed']
+    assert not deleted['complete']
+    assert sum(t['score'] for t in deleted['statistics']['teams'].values()) == count - 1
+    assert [(r['server_id'], r['receiver_id']) for r in deleted['timeline']] == [
+        ('A1', 'B1'), ('B2', 'A2'), ('B2', 'A1')][:count - 1]
+    aces = Counter(r['server_id'] for r in deleted['timeline'])
+    assert all(p['aces'] == aces[p['player_id']] for p in deleted['statistics']['players'])
+    restarted = ProjectService(service.data_dir, metadata_probe=service.metadata_probe).snapshot(project['project_id'])
+    assert restarted['rallies'] == deleted['rallies']
+    assert restarted['statistics'] == deleted['statistics']
+    assert restarted['selected'] == deleted['selected']
+    restored = edit(service, deleted, 'undo')
+    for field in ('rallies', 'statistics', 'timeline', 'highlight_queue', 'selected', 'position', 'match_settings', 'complete'):
+        assert restored[field] == before[field]
+    redone = edit(service, restored, 'redo')
+    assert redone['rallies'] == deleted['rallies']
+    assert redone['statistics'] == deleted['statistics']
+
+
+def test_delete_is_transactional_and_revision_checked(service, tmp_path, monkeypatch):
+    project = add(service, new_project(service, tmp_path), 2, 5)
+    identity = project['rallies'][0]['rally_id']
+    before = service.get_state(project['project_id'])
+    with pytest.raises(ValueError, match='Select a saved clip'):
+        edit(service, project, 'delete', rally_id='missing')
+    with pytest.raises(ProjectError) as conflict:
+        service.command(project['project_id'], {'type': 'delete', 'rally_id': identity, 'revision': project['revision'] - 1})
+    assert conflict.value.code == 'revision_conflict'
+    service.lock_job(project['project_id'], 'job', project['revision'])
+    with pytest.raises(ProjectError) as busy:
+        edit(service, project, 'delete', rally_id=identity)
+    assert busy.value.code == 'project_busy'
+    service.unlock_job(project['project_id'], 'job')
+    def fail_save(_state):
+        raise OSError('disk full')
+    with monkeypatch.context() as patch:
+        patch.setattr(service, '_persist', fail_save)
+        with pytest.raises(OSError, match='disk full'):
+            edit(service, project, 'delete', rally_id=identity)
+    assert service.get_state(project['project_id']) == before
+    assert service.snapshot(project['project_id'])['can_undo'] == project['can_undo']
+
+
+def test_delete_recomputes_overtime_turns(service, tmp_path):
+    project = new_project(service, tmp_path)
+    project = edit(service, project, 'setup', match_settings={'initial_score_a': 20, 'initial_score_b': 20})
+    for i in range(4):
+        project = add(service, project, i * 5, i * 5 + 3)
+    ids = [r['rally_id'] for r in project['rallies']]
+    for identity in ids:
+        project = edit(service, project, 'classify', rally_id=identity, kind='ace')
+    project = edit(service, project, 'delete', rally_id=ids[1])
+    assert [(r['server_id'], r['receiver_id']) for r in project['timeline']] == [
+        ('A1', 'B1'), ('B2', 'A2'), ('A2', 'B1')]
+    assert project['timeline'][-1]['score_after'] == (22, 21)
+    assert project['timeline'][-1]['next_server_id'] == 'B1'
+
+
+def test_earlier_outcomes_recompute_rotation_and_generated_credits(service, tmp_path):
+    project = new_project(service, tmp_path)
+    for i in range(5):
+        project = add(service, project, i * 5, i * 5 + 3)
+    ids = [r['rally_id'] for r in project['rallies']]
+    details = dict(version=1, possessions=[], serve_faults=[], error=None, terminal_defender_id=None)
+    for identity in ids:
+        project = edit(service, project, 'classify', rally_id=identity, kind='ace', quick_log=details)
+    original = deepcopy(project)
+    project = edit(service, project, 'classify', rally_id=ids[0], kind='sideout', quick_log=details)
+    assert [(r['server_id'], r['receiver_id']) for r in project['timeline']] == [
+        (r['server_id'], r['receiver_id']) for r in original['timeline']]
+    project = edit(service, project, 'classify', rally_id=ids[0], kind='redo', quick_log=details)
+    assert [(r['server_id'], r['receiver_id']) for r in project['timeline'][1:]] == [
+        ('A1', 'B1'), ('B2', 'A2'), ('B2', 'A1'), ('A2', 'B1')]
+    assert project['rallies'][1]['point_stats']['server_id'] == 'A1'
+    assert project['statistics']['coverage']['invalid'] == 0
+    assert sum(p['aces'] for p in project['statistics']['players']) == 4
+    project = edit(service, project, 'undo')
+    project = edit(service, project, 'classify', rally_id=ids[0], kind='ace', quick_log=details)
+    project = edit(service, project, 'reject', rally_id=ids[0], rejected=True)
+    assert project['rallies'][1]['point_stats']['server_id'] == 'A1'
+    project = edit(service, project, 'reject', rally_id=ids[0], rejected=False)
+    assert project['timeline'] == original['timeline']
+    for field in ('players', 'teams', 'coverage', 'warnings'):
+        assert project['statistics'][field] == original['statistics'][field]
+    project = edit(service, project, 'clear_classification', rally_id=ids[0])
+    assert all(r['provisional'] for r in project['timeline'][1:])
+    assert sum(t['score'] for t in project['statistics']['teams'].values()) == 0
+    project = edit(service, project, 'undo')
+    moved = edit(service, project, 'trim', rally_id=ids[1], start_time=30, end_time=33)
+    assert moved['rallies'][moved['selected']]['rally_id'] == ids[1]
+    assert moved['timeline'][-1]['rally_id'] == ids[1]
+    assert moved['rallies'][1]['rally_id'] == ids[2]
+    assert moved['rallies'][1]['point_stats']['receiver_id'] == 'A2'
+    assert moved['statistics']['coverage']['invalid'] == 0
+    assert sum(p['aces'] for p in moved['statistics']['players']) == 5
+
+
+def test_export_quality_preferences_persist_and_reach_render_request(service, tmp_path):
+    from application.jobs import prepare_export
+    project = add(service, new_project(service, tmp_path), 2, 5)
+    project = edit(service, project, "export_settings", settings={"resolution": "2160p", "frame_rate": 60})
+    restarted = ProjectService(service.data_dir, metadata_probe=service.metadata_probe)
+    state = restarted.get_state(project["project_id"])
+    assert state["export_settings"]["resolution"] == "2160p"
+    assert state["export_settings"]["frame_rate"] == 60
+    payload = prepare_export(state, {"output_path": str(tmp_path / "export.mp4")})
+    assert payload["options"]["resolution"] == "2160p"
+    assert payload["options"]["frame_rate"] == 60
+    before = deepcopy(state)
+    with pytest.raises(ValueError, match="frame_rate"):
+        edit(restarted, project, "export_settings", settings={"frame_rate": 120})
+    assert restarted.get_state(project["project_id"]) == before
+
+
 def test_classification_credit_rotation_autosave_and_history(service, tmp_path):
     project = add(service, new_project(service, tmp_path), 2, 5)
     project = add(service, project, 10, 14)

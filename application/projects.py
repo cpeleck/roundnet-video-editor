@@ -417,7 +417,7 @@ class ProjectService:
         rallies = [Rally.from_dict(r) for r in state["rallies"]]
         identity = command.get("rally_id")
         index = next((i for i, rally in enumerate(rallies) if rally.rally_id == identity), -1)
-        clip_kinds = {"classify", "clear_classification", "trim", "split", "star", "reject",
+        clip_kinds = {"classify", "clear_classification", "trim", "split", "star", "reject", "delete",
                       "export_enabled", "caption", "crop", "touches", "select"}
         if kind in clip_kinds and index < 0:
             raise ValueError("Select a saved clip")
@@ -469,7 +469,8 @@ class ProjectService:
                 candidate = replace(rally, classification=classification, reviewed=True, point_stats=point)
                 candidate_rallies = rallies[:]
                 candidate_rallies[index] = candidate
-                final_assignment = match_timeline(candidate_rallies, state["match_settings"])[index]
+                final_assignment = next(row for row in match_timeline(candidate_rallies, state["match_settings"])
+                                        if row["rally_id"] == rally.rally_id)
                 issues = point_issues(point, final_assignment["winner"], start=rally.start_time, end=rally.end_time)
                 issues += classified_point_issues(point, classification, final_assignment)
                 if issues:
@@ -541,6 +542,16 @@ class ProjectService:
             if rejected:
                 state["highlight_queue"] = [c for c in state["highlight_queue"] if c["rally_id"] != rally.rally_id]
             affects_stats = rejected != rally.rejected
+        elif kind == "delete":
+            rallies.pop(index)
+            state["highlight_queue"] = [c for c in state["highlight_queue"] if c["rally_id"] != rally.rally_id]
+            state["rejected_detections"] = [r for r in state.get("rejected_detections", [])
+                                            if r.get("rally_id") != rally.rally_id
+                                            and r.get("rejection_id") != rally.rally_id]
+            state["selected"] = min(index, len(rallies) - 1)
+            state["position"] = min(rally.end_time, state["video_duration"])
+            state["explanation"] = "Clip deleted. Later scores, serving assignments, and statistics recalculated. Undo restores it."
+            affects_stats = True
         elif kind == "export_enabled":
             enabled = _boolean(command["enabled"], "Include in exported video")
             if enabled and rally.rejected:
@@ -578,7 +589,7 @@ class ProjectService:
         elif kind == "export_settings":
             if not isinstance(command["settings"], dict):
                 raise ValueError("Export settings must be an object")
-            presentation_keys = {"aspect_ratio", "highlights_only", "scoreboard", "overlay_path", "include_stats", "include_notes", "stats_duration"}
+            presentation_keys = {"aspect_ratio", "highlights_only", "scoreboard", "overlay_path", "include_stats", "include_notes", "stats_duration", "resolution", "frame_rate"}
             preferences = {"mode", "output_path", "prefer_hardware"}
             unknown = set(command["settings"]) - presentation_keys - preferences
             if unknown:

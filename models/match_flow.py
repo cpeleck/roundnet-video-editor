@@ -100,6 +100,8 @@ def match_timeline(rallies: list[Any], settings: Mapping[str, Any]) -> list[dict
     is the number of awarded points before that clip, excluding the optional
     initial score. An unknown clip leaves subsequent assignments provisional;
     the known points continue advancing so later edits can still be previewed.
+    Each row also includes the score and serving pair after that clip, including
+    the final clip when no following row exists.
     """
 
     if not isinstance(settings, Mapping):
@@ -152,7 +154,7 @@ def match_timeline(rallies: list[Any], settings: Mapping[str, Any]) -> list[dict
         else:
             winner = legacy_winner if legacy_winner in ("A", "B") else ""
 
-        result.append({
+        row = {
             "index": index,
             "rally_id": _field(rally, "rally_id", ""),
             "server_id": server_id,
@@ -162,7 +164,8 @@ def match_timeline(rallies: list[Any], settings: Mapping[str, Any]) -> list[dict
             "winner": winner,
             "kind": kind,
             "provisional": provisional,
-        })
+        }
+        result.append(row)
         if winner:
             if winner == "A":
                 score_a += 1
@@ -178,6 +181,12 @@ def match_timeline(rallies: list[Any], settings: Mapping[str, Any]) -> list[dict
                 serve_in_turn = 0
         elif not rejected and kind != "redo" and not legacy_redo:
             provisional = True
+        row.update(
+            score_after=(score_a, score_b),
+            next_server_id=server_cycle[turn % 4],
+            next_receiver_id=(second_receivers if serve_in_turn else first_receivers)[turn % 4],
+            provisional_after=provisional,
+        )
     return result
 
 

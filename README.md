@@ -30,6 +30,7 @@ has not yet been established on a labeled benchmark.
 - Review player cards, team totals, the original
   RPR breakdown, and who aced whom; export CSV, JSON, or a PNG stat card.
 - Export original-aspect, landscape, portrait, or square MP4 videos, optionally
+  at HD, Full HD, 1440p, or 4K resolution and a selected frame rate up to 60 fps,
   with assisted crop keyframes, a scoreboard, captions, PNG branding, and a
   previewable four-player end card with adjustable duration.
 - Exchange original-source cuts through JSON or a restricted CMX3600 EDL.
@@ -68,6 +69,42 @@ when the default ports are occupied. `--node /path/to/node` selects a Node
 executable that is outside `PATH`. The launcher uses its current Python
 environment and requires dependencies to be installed first.
 
+### Use from an iPhone on the same Wi-Fi
+
+Start the editor on your Mac with phone access enabled:
+
+```bash
+source .venv/bin/activate
+python run_web.py --phone
+```
+
+Open the **private pairing link** printed in the terminal in Safari on your
+iPhone. Both devices must be on the same trusted Wi-Fi, and the Mac must stay
+awake with the launcher running. If automatic address detection fails, use
+`--phone-host 192.168.1.42`, substituting your Mac's Wi-Fi IPv4 address. Allow
+incoming connections if macOS asks. Stop an existing Mac-only launcher before
+starting phone mode on the same ports.
+
+Choose **New match → Choose video** to select a recording from Photos or Files.
+The video transfers directly to your Mac; keep Safari open until the transfer
+and recording check finish. Imports stream to disk, accept recordings up to
+20 GB, and can be cancelled. Interrupted transfers require selecting the video
+again. Projects and imported recordings stay in `.roundnet/web/` on the Mac;
+keep this directory backed up and allow space for both source and output videos.
+
+Review and trim on your phone, then choose **Export video**. The Mac renders to
+a managed folder; **Download MP4** returns the finished video to Safari. Use
+Safari's Share menu to save or share it. Existing saved matches appear on the
+Projects screen; opening arbitrary Mac paths and choosing local branding files
+remain Mac operations. This is a browser workflow backed by your Mac, rather
+than a standalone iPhone app.
+
+Phone mode uses a fresh pairing secret each launch and a private session cookie
+for API requests, previews, and downloads. Keep the pairing link private.
+Restarting the launcher expires prior links and sessions. Local Wi-Fi traffic
+uses HTTP, so use a trusted home network; do not expose the ports to the internet.
+Normal startup without `--phone` continues to bind both services to loopback.
+
 To run the services separately:
 
 ```bash
@@ -98,7 +135,8 @@ desktop host and installer have not been added.
    detailed touch logs supply the information needed for deeper statistics.
 4. Trim clips as needed. **Not a rally** removes a false detection from match
    scoring; **Exclude from export** omits a real clip from the video while
-   preserving its point and statistics. Star clips to shortlist highlights.
+   preserving its point and statistics. **Delete clip** removes the clip and
+   point from the project; Undo restores both. Star clips to shortlist highlights.
 5. Open **Stats** to review player cards and coverage. Missing outcomes explain
    provisional scoring; touch-dependent statistics remain unknown until their
    required details are recorded. RPR recalculates automatically from logged points; full-match confirmation
@@ -118,6 +156,19 @@ Return to Projects to resume autosaved work or open an existing `.roundnet.json`
 project. Project setup remains editable. Keep source media at a stable path; the
 project references that file rather than copying it. Recovery files for the
 browser interface are kept in `.roundnet/web/`.
+
+In the browser editor, **W** sets the pending clip start at the playhead; pressing
+W again replaces that start. **Reset start to playhead** does the same while a
+start is marked. **X** marks the end and saves the clip; **Escape** cancels the
+pending markers. Selecting an existing clip makes Play review that clip's range.
+Use **Continue after clip** to leave the range, turn off looping, and immediately
+play the source recording from the clip's end. Later Play presses continue the
+recording until you explicitly select or replay a clip again.
+
+Clip and highlight-reel trim fields use **MM:SS**, matching source playback.
+Enter `01:23` for one minute and 23 seconds, or `01:23.45` for a precise cut.
+Minutes can exceed 59 for longer recordings; seconds must stay between 00 and 59.
+**Use playhead** fills a match-clip boundary with the current formatted timestamp.
 
 ## A first edit in the native desktop interface
 
@@ -235,6 +286,12 @@ classification recalculates later assignments and scores. An unclassified clip
 makes later assignments provisional until you classify it. The outcome buttons
 guide you back to the earliest unresolved clip before scoring later serves.
 
+For example, with A/B on one team and C/D on the other, B opening to C gives
+**B → C, D → A, D → B, A → C, A → D, C → B, C → A, B → C, B → D**, then repeats
+the two-serve turns. Each awarded point advances the rotation regardless of its
+winner. Redo and rejected clips consume no serve; export exclusions still count.
+Deleting an earlier point shifts the later assignments and scores.
+
 Ace, Service Break, and Defensive Hold award the serving team a point. Double
 Fault, Sideout, and Defensive Break award the receiving team a point. Error
 requires the player who made the unforced error and awards the opposing team a
@@ -259,6 +316,14 @@ other touch-derived values stay unknown until the needed touches are logged.
 Export player CSV, full event JSON, or a shareable PNG card. Classifications
 and optional touch logs are saved in projects and recovery and support undo/redo.
 
+Earlier edits can change the server or receiver in a saved player log. Compatible
+generated logs update automatically. Explicit observations that no longer fit
+remain saved and are flagged in Statistics and on the affected clip. Use
+**Review player log** to correct them. In a quick log with an outdated receiver,
+First touch 1 becomes editable; select the current receiver and review the other
+players before saving. Such a correction preserves the recorded hitter until you
+explicitly change it.
+
 The **Original RPR** tab calculates Hitting, Serving, Defense, and Efficiency
 using the published original model. It calculates automatically from complete recorded-point evidence, known
 results, and serve/hit attempts for each rated player. Full-match confirmation
@@ -269,8 +334,12 @@ and touch quality are entered manually, not detected from video. See
 incomplete-data handling, and attribution.
 
 Stars mark highlights independently from whether a clip is enabled. Choose
-starred-only export for a highlights cut. The scoreboard shows the score before
-each included point, accounting for valid points omitted from the cut. Optional
+starred-only export for a highlights cut. The compact scoreboard fits its text
+with a small inset and shows the team score for each point, accounting for valid
+points omitted from the cut. Server and receiver appear in the editing interface
+for the selected clip throughout its review. At the clip's end, the editor shows
+the updated score and the next serving pair separately from that clip's pair;
+seeking back into a clip restores that point's starting state. Optional
 captions use the clip's player/outcome/note. A supplied PNG is placed at the lower
 right as branding. Exports include the current score, player statistics, and RPR end card by default.
 The export dialog previews that player card and lets
@@ -286,7 +355,14 @@ Exports read the original source, trim kept intervals, and concatenate them with
 FFmpeg. Accurate non-keyframe boundaries require a high-quality re-encode; this
 is not smart-copy export. Choosing a crop changes output dimensions, while the
 original-aspect option retains source dimensions apart from even-pixel encoding
-requirements. Original audio is included when present.
+requirements when resolution is set to Original recording. Both interfaces offer
+720p, 1080p, 1440p, and 4K (2160p), independently of framing, and source frame rate
+or 24, 25, 30, 50, and 60 fps. 4K produces 3840 × 2160 landscape, 2160 × 3840
+portrait, or 2160 × 2160 square; original framing fits within the corresponding
+4K box. Presets can upscale smaller footage but cannot add missing detail. Higher
+frame rates duplicate frames without motion interpolation. Source settings
+continue to preserve recordings above these preset limits. Overlays and the end
+card render at the chosen output dimensions. Original audio is included when present.
 
 ## Learning from your corrections
 

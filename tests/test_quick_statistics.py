@@ -220,3 +220,52 @@ def test_incompatible_quick_receiver_selection_is_flagged_without_rewriting():
     point = quick_point_stats(log('B2', error={'player_id': 'B2', 'kind': 'receive'}), category, old)
     corrected = {**old, 'receiver_id': 'B1'}
     assert reconcile_quick_stats(point, category, corrected) == point
+
+
+@pytest.mark.parametrize('full_log', [False, True])
+def test_deleting_earlier_point_preserves_incompatible_observations(service, tmp_path, full_log):
+    project = new_project(service, tmp_path)
+    for i in range(4):
+        project = add(service, project, i * 5, i * 5 + 3)
+    ids = [r['rally_id'] for r in project['rallies']]
+    for identity in ids[:2]:
+        project = edit(service, project, 'classify', rally_id=identity, kind='ace', quick_log=log())
+    project = edit(service, project, 'classify', rally_id=ids[2], kind='defensive_hold', quick_log=log('A1', 'B1'))
+    if full_log:
+        full = deepcopy(project['rallies'][2]['point_stats'])
+        full.pop('quick_log')
+        project = edit(service, project, 'touches', rally_id=ids[2], point_stats=full)
+    project = edit(service, project, 'classify', rally_id=ids[3], kind='ace', quick_log=log())
+    before = deepcopy(project)
+    recorded = before['rallies'][2]['point_stats']
+    deleted = edit(service, project, 'delete', rally_id=ids[1])
+    assert deleted['timeline'][1]['receiver_id'] == 'A2'
+    assert deleted['rallies'][1]['point_stats'] == recorded
+    assert deleted['statistics']['coverage']['invalid'] == 1
+    # Compatible generated defaults are refreshed in the same transaction.
+    assert deleted['rallies'][2]['point_stats']['server_id'] == 'B2'
+    assert deleted['rallies'][2]['point_stats']['receiver_id'] == 'A1'
+    restarted = type(service)(service.data_dir, metadata_probe=service.metadata_probe).snapshot(project['project_id'])
+    assert restarted['rallies'] == deleted['rallies']
+    assert restarted['statistics'] == deleted['statistics']
+    restored = edit(service, deleted, 'undo')
+    assert restored['rallies'] == before['rallies']
+    assert restored['statistics'] == before['statistics']
+    assert restored['statistics']['coverage']['invalid'] == 0
+
+
+def test_quick_log_validation_uses_clip_identity_in_unsorted_saved_project(service, tmp_path):
+    from models.project import write_project
+    project = add(service, new_project(service, tmp_path), 0, 3)
+    project = add(service, project, 5, 8)
+    first, second = [r['rally_id'] for r in project['rallies']]
+    project = edit(service, project, 'classify', rally_id=first, kind='ace', quick_log=log())
+    state = service.get_state(project['project_id'])
+    state['rallies'].reverse()
+    state['selected'] = 0
+    write_project(service.project_dir / f"{project['project_id']}.roundnet.json", state)
+    restarted = type(service)(service.data_dir, metadata_probe=service.metadata_probe)
+    project = restarted.snapshot(project['project_id'])
+    project = edit(restarted, project, 'classify', rally_id=second, kind='ace', quick_log=log())
+    assert project['rallies'][0]['point_stats']['server_id'] == 'B2'
+    assert project['statistics']['coverage']['invalid'] == 0

@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import errno
 import importlib.util
+import ipaddress
 import os
+import secrets
 from pathlib import Path
 import shutil
 import signal
@@ -29,13 +31,13 @@ def _port(value: str) -> int:
     return port
 
 
-def _check_port(port: int) -> None:
+def _check_port(port: int, host: str = HOST) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         try:
             # Match server sockets so recently closed test/dev connections do
             # not look like a live listener during a quick restart.
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind((HOST, port))
+            probe.bind((host, port))
             probe.listen(1)
         except OSError as exc:
             if exc.errno != errno.EADDRINUSE:
@@ -44,6 +46,25 @@ def _check_port(port: int) -> None:
                 f"Port {port} is already in use. Stop the other service or select "
                 "a different --api-port / --frontend-port."
             ) from exc
+
+
+def _phone_address(value: str | None = None) -> str:
+    if not value and sys.platform == "darwin":
+        for interface in ("en0", "en1"):
+            result = subprocess.run(["/usr/sbin/ipconfig", "getifaddr", interface],
+                                    capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                value = result.stdout.strip()
+                break
+    if not value:
+        raise RuntimeError("Connect your Mac to Wi-Fi, or supply its local IP with --phone-host.")
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ValueError as exc:
+        raise RuntimeError("--phone-host must be your Mac's local IPv4 address.") from exc
+    if not address.is_private or address.is_loopback or address.is_unspecified or address.is_link_local:
+        raise RuntimeError("--phone-host must be your Mac's private Wi-Fi address.")
+    return str(address)
 
 
 def _wait_until_ready(url: str, process: subprocess.Popen[bytes]) -> None:
@@ -90,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--node", help="Node.js executable path (default: node on PATH)")
     parser.add_argument("--reload", action="store_true", help="Reload the API after Python edits")
     parser.add_argument("--no-browser", action="store_true", help="Do not open the interface automatically")
+    parser.add_argument("--phone", action="store_true", help="Enable paired phone access on the same Wi-Fi")
+    parser.add_argument("--phone-host", help="Mac's local IPv4 address (implies --phone)")
     args = parser.parse_args(argv)
 
     def request_shutdown(_signal: int, _frame: object) -> None:
@@ -113,8 +136,11 @@ def main(argv: list[str] | None = None) -> int:
         vite = ROOT / "frontend" / "node_modules" / "vite" / "bin" / "vite.js"
         if not vite.is_file():
             raise RuntimeError("Frontend dependencies are missing. Run npm install in frontend first.")
+        phone_host = _phone_address(args.phone_host) if args.phone or args.phone_host else None
+        phone_token = secrets.token_urlsafe(32) if phone_host else ""
+        frontend_host = "0.0.0.0" if phone_host else HOST
         _check_port(args.api_port)
-        _check_port(args.frontend_port)
+        _check_port(args.frontend_port, frontend_host)
 
         api_url = f"http://{HOST}:{args.api_port}"
         frontend_url = f"http://{HOST}:{args.frontend_port}"
@@ -122,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         child_env["ROUNDNET_API_PORT"] = str(args.api_port)
         child_env["ROUNDNET_FRONTEND_PORT"] = str(args.frontend_port)
         child_env["VITE_API_URL"] = api_url
+        # Do not inherit a stale pairing session into normal Mac-only startup.
+        child_env["ROUNDNET_PHONE_TOKEN"] = phone_token
+        child_env["ROUNDNET_PHONE_HOST"] = phone_host or ""
         child_env["PATH"] = str(Path(node).resolve().parent) + os.pathsep + child_env.get("PATH", "")
         api_command = [
             sys.executable, "-m", "uvicorn", "backend.app:app",
@@ -135,14 +164,19 @@ def main(argv: list[str] | None = None) -> int:
         _wait_until_ready(api_url + "/api/health", api)
 
         frontend = subprocess.Popen(
-            [node, str(vite), "--host", HOST, "--port", str(args.frontend_port), "--strictPort"],
+            [node, str(vite), "--host", frontend_host, "--port", str(args.frontend_port), "--strictPort"],
             cwd=ROOT / "frontend", env=child_env, start_new_session=True,
         )
         processes.append(frontend)
         _wait_until_ready(frontend_url, frontend)
         print(f"Roundnet is ready at {frontend_url}. Press Ctrl+C to stop both services.", flush=True)
+        if phone_host:
+            print(f"\nOpen this private pairing link in Safari on your iPhone:\n"
+                  f"http://{phone_host}:{args.frontend_port}/#pair={phone_token}\n"
+                  "Keep both devices on the same trusted Wi-Fi and leave this Mac running.\n"
+                  "Keep the link private. Restarting the launcher expires it.\n", flush=True)
         if not args.no_browser:
-            webbrowser.open(frontend_url)
+            webbrowser.open(frontend_url + (f"/#pair={phone_token}" if phone_host else ""))
         while True:
             for process in processes:
                 if process.poll() is not None:

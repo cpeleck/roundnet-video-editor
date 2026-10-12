@@ -32,7 +32,7 @@ def export_options(state: Mapping[str, Any], changes: Mapping[str, Any] | None =
     defaults = prepare_export_options()
     options = {"include_stats": True, "scoreboard": True,
                **{key: value for key, value in state.get("match_settings", {}).items() if key in defaults}}
-    presentation_keys = {"aspect_ratio", "highlights_only", "scoreboard", "overlay_path", "include_stats", "include_notes", "stats_duration"}
+    presentation_keys = {"aspect_ratio", "highlights_only", "scoreboard", "overlay_path", "include_stats", "include_notes", "stats_duration", "resolution", "frame_rate"}
     stored = state.get("export_settings", {})
     if isinstance(stored, Mapping):
         options.update({key: value for key, value in stored.items() if key in presentation_keys})

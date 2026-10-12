@@ -5,15 +5,17 @@ import { labelFor, timecode, type Command } from './App';
 import { Video } from './Video';
 import { Modal } from './Modal';
 import { displayDimensions } from './geometry';
+import { scorecardState } from './scorecard';
 import type { PointStats, Project, QuickLog, Rally, Touch } from './types';
 import { emptyQuickLog, QuickLogEditor } from './QuickLogEditor';
+import { ClipTrim } from './ClipTrim';
 
 const groups = [
   { title: 'Serving team wins', className: 'serving', actions: [['ace', 'Ace', 'Unreturnable serve', '1'], ['service_break', 'Service Break', 'Service pressure wins', '2'], ['defensive_hold', 'Defensive Hold', 'Serving team converts defense', '3']] },
   { title: 'Receiving team wins', className: 'receiving', actions: [['double_fault', 'Double Fault', 'Two service errors', '4'], ['sideout', 'Sideout', 'Clean return wins', '5'], ['defensive_break', 'Defensive Break', 'Receiving team converts defense', '6']] },
   { title: 'Other outcomes', className: 'other', actions: [['error', 'Error', 'Choose the player responsible', '7'], ['redo', 'Redo', 'No point · same serving pair', '8']] },
 ];
-export function Review({ project, command, busy, shortcuts, onStats }: { project: Project; command: Command; busy: boolean; shortcuts: boolean; onStats: () => void }) {
+export function Review({ project, command, busy, shortcuts, onStats, onDraftChange }: { project: Project; command: Command; busy: boolean; shortcuts: boolean; onStats: () => void; onDraftChange?: (open: boolean) => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const outcomeFocus = useRef<HTMLElement>(null);
   const playRange = useRef<{ start: number; end: number } | null>(null);
@@ -31,8 +33,20 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
   const [cropMode, setCropMode] = useState(false);
   const [filter, setFilter] = useState('all');
   const [loop, setLoop] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const deletePending = useRef(false);
+  const editingBusy = busy || deleting;
+  const clipActionsDisabled = editingBusy || markStart !== null || !!guidedKind || touchOpen;
+  useEffect(() => {
+    onDraftChange?.(markStart !== null || !!guidedKind || touchOpen);
+    return () => onDraftChange?.(false);
+  }, [markStart, guidedKind, touchOpen, onDraftChange]);
   const rally = project.rallies[project.selected];
   const assignment = project.timeline.find(t => t.rally_id === rally?.rally_id);
+  const completed = !!rally && position >= rally.end_time;
+  const card = assignment ? scorecardState(assignment, completed) : null;
+  const logConflict = !!rally && !rally.rejected && !!assignment && !!rally.point_stats.events?.length
+    && (rally.point_stats.server_id !== assignment.server_id || rally.point_stats.receiver_id !== assignment.receiver_id);
   const names = Object.fromEntries(project.match_settings.players.map(p => [p.player_id, p.name]));
   const firstMissing = project.rallies.find(r => !r.rejected && !r.classification.kind && !r.winner && r.outcome !== 'Replay / no point');
   const stats = project.statistics;
@@ -42,20 +56,24 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
   const seek = (seconds: number) => { const value = Math.max(0, Math.min(project.video_duration, seconds)); if (video.current) video.current.currentTime = value; setPosition(value); };
   const startPlayback = async () => {
     setPlaybackMessage('');
-    if (!video.current || currentTime() >= project.video_duration) { setPlaying(false); return; }
+    if (!video.current || currentTime() >= project.video_duration) { video.current?.pause(); setPlaying(false); return; }
     try { await video.current.play(); } catch { setPlaying(false); setPlaybackMessage('Playback is paused. Click Resume to continue.'); }
   };
   const select = async (r: Rally) => {
-    setGuidedKind(null); setMenuOpen(false); setCropMode(false);
-    playbackGeneration.current++; video.current?.pause();
+    if (clipActionsDisabled || deletePending.current) return;
+    const generation = ++playbackGeneration.current;
     managedSelection.current = '*';
     const value = await command('select', { rally_id: r.rally_id });
     if (!value) managedSelection.current = null;
-    if (value) { managedSelection.current = r.rally_id; continuous.current = false; playRange.current = { start: r.start_time, end: r.end_time }; seek(r.start_time); }
+    if (value && generation === playbackGeneration.current) {
+      setMenuOpen(false); setCropMode(false); video.current?.pause();
+      managedSelection.current = r.rally_id; continuous.current = false;
+      playRange.current = { start: r.start_time, end: r.end_time }; seek(r.start_time);
+    }
   };
   const adjacent = (direction: number) => { const next = project.rallies[Math.max(0, Math.min(project.rallies.length - 1, project.selected + direction))]; if (next) void select(next); };
   const commitPoint = async (kind: string, quick_log?: QuickLog) => {
-    if (!rally || busy) return;
+    if (!rally || editingBusy || deletePending.current) return;
     const end = rally.end_time;
     const generation = ++playbackGeneration.current;
     managedSelection.current = '*';
@@ -68,7 +86,7 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
     }
   };
   const classify = async (kind: string) => {
-    if (!rally || busy || markStart !== null) return;
+    if (!rally || clipActionsDisabled || deletePending.current || rally.rejected || assignment?.provisional) return;
     if (rally.classification.kind === kind && rally.point_stats.events?.length && !rally.point_stats.quick_log) {
       await commitPoint(kind); return;
     }
@@ -77,9 +95,9 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
     }
     await commitPoint(kind, rally.classification.kind === kind ? rally.point_stats.quick_log ?? emptyQuickLog() : emptyQuickLog());
   };
-  const markBegin = () => { if (busy || guidedKind || touchOpen) return; setMarkerError(''); setMarkStart(currentTime()); playRange.current = null; continuous.current = true; };
+  const markBegin = () => { if (editingBusy || deletePending.current || guidedKind || touchOpen) return; setMarkerError(''); setMarkStart(currentTime()); playRange.current = null; continuous.current = true; setMenuOpen(false); setCropMode(false); };
   const markEnd = async () => {
-    if (markStart === null || busy) return;
+    if (markStart === null || editingBusy || deletePending.current) return;
     const end = currentTime();
     if (end <= markStart) { setMarkerError('The clip end must be after its start. Seek forward and mark the end again.'); return; }
     video.current?.pause(); playbackGeneration.current++; setMarkerError('');
@@ -88,9 +106,35 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
     if (!value) managedSelection.current = null;
     if (value) { managedSelection.current = value.rallies[value.selected]?.rally_id ?? null; setMarkStart(null); continuous.current = false; playRange.current = null; seek(end); }
   };
-  const replay = () => { if (!rally) return; continuous.current = false; playRange.current = { start: rally.start_time, end: rally.end_time }; seek(rally.start_time); void startPlayback(); };
+  const continueAfterClip = () => {
+    if (!rally || clipActionsDisabled || deletePending.current) return;
+    playbackGeneration.current++; playRange.current = null; continuous.current = true;
+    setLoop(false); setMenuOpen(false); setCropMode(false);
+    seek(rally.end_time); void startPlayback();
+  };
+  const deleteClip = async () => {
+    if (!rally || clipActionsDisabled || deletePending.current) return;
+    const end = rally.end_time;
+    const generation = ++playbackGeneration.current;
+    deletePending.current = true; setDeleting(true); managedSelection.current = '*';
+    try {
+      const value = await command('delete', { rally_id: rally.rally_id });
+      if (!value) { managedSelection.current = null; return; }
+      if (generation !== playbackGeneration.current) return;
+      managedSelection.current = value.rallies[value.selected]?.rally_id ?? null;
+      video.current?.pause(); playRange.current = null; continuous.current = true;
+      setLoop(false); setMenuOpen(false); setCropMode(false); setPlaybackMessage(''); seek(end);
+    } finally { deletePending.current = false; setDeleting(false); }
+  };
+  const reviewPlayerLog = () => {
+    if (!rally || clipActionsDisabled || rally.rejected || assignment?.provisional) return;
+    video.current?.pause();
+    if (rally.point_stats.quick_log && rally.classification.kind) setGuidedKind(rally.classification.kind);
+    else setTouchOpen(true);
+  };
+  const replay = () => { if (!rally || editingBusy) return; continuous.current = false; playRange.current = { start: rally.start_time, end: rally.end_time }; seek(rally.start_time); void startPlayback(); };
   const play = () => {
-    if (!video.current) return;
+    if (!video.current || editingBusy) return;
     if (!video.current.paused) video.current.pause();
     else if (!continuous.current && rally && markStart === null) {
       playRange.current = { start: rally.start_time, end: rally.end_time };
@@ -101,17 +145,20 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
   useEffect(() => {
     if (managedSelection.current === '*') return;
     if (managedSelection.current === rally?.rally_id) { managedSelection.current = null; return; }
-    playbackGeneration.current++; video.current?.pause(); playRange.current = null;
+    playbackGeneration.current++; video.current?.pause(); playRange.current = null; continuous.current = true;
     seek(project.position ?? rally?.start_time ?? 0);
   }, [rally?.rally_id]);
   useEffect(() => {
-    if (busy || touchOpen || guidedKind || !shortcuts || Math.abs(position - project.position) < .05) return;
+    if (playRange.current && rally) playRange.current = { start: rally.start_time, end: rally.end_time };
+  }, [rally?.start_time, rally?.end_time]);
+  useEffect(() => {
+    if (editingBusy || touchOpen || guidedKind || !shortcuts || Math.abs(position - project.position) < .05) return;
     const timer = window.setTimeout(() => { void command('position', { position }); }, 1500);
     return () => clearTimeout(timer);
-  }, [position, project.position, busy, touchOpen, guidedKind, shortcuts, command]);
+  }, [position, project.position, editingBusy, touchOpen, guidedKind, shortcuts, command]);
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (!shortcuts || touchOpen || busy || event.metaKey || event.ctrlKey || event.altKey || (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable=true]'))) return;
+      if (!shortcuts || touchOpen || editingBusy || deletePending.current || event.metaKey || event.ctrlKey || event.altKey || (event.target instanceof Element && event.target.matches('input,textarea,select,[contenteditable=true]'))) return;
       const key = event.key.toLowerCase();
       if (key === 'arrowleft' || key === 'arrowright') { event.preventDefault(); seek(currentTime() + (key === 'arrowleft' ? -5 : 5)); return; }
       if (key === ' ' && !(event.target instanceof Element && event.target.closest('button'))) { event.preventDefault(); play(); return; }
@@ -119,44 +166,47 @@ export function Review({ project, command, busy, shortcuts, onStats }: { project
       const kind = groups.flatMap(g => g.actions).find(a => a[3] === event.key)?.[0];
       if (kind) { event.preventDefault(); void classify(kind); return; }
       if (key === '[') adjacent(-1); else if (key === ']') adjacent(1);
-      else if (key === 'w' && markStart === null) markBegin(); else if (key === 'x') void markEnd();
-      else if (key === 'f' && rally) void command('star', { rally_id: rally.rally_id, starred: !rally.starred });
+      else if (key === 'w') { event.preventDefault(); markBegin(); } else if (key === 'x') { event.preventDefault(); void markEnd(); }
+      else if (key === 'f' && rally && !clipActionsDisabled) void command('star', { rally_id: rally.rally_id, starred: !rally.starred });
       else if (key === 'escape') { setMarkStart(null); setMarkerError(''); setCropMode(false); }
     };
     window.addEventListener('keydown', listener); return () => window.removeEventListener('keydown', listener);
   });
-  const moreCommand = (type: string, values: Record<string, unknown> = {}) => { if (rally) void command(type, { rally_id: rally.rally_id, ...values }); setMenuOpen(false); };
+  const moreCommand = (type: string, values: Record<string, unknown> = {}) => { if (rally && !clipActionsDisabled) void command(type, { rally_id: rally.rally_id, ...values }); setMenuOpen(false); };
   return <main className="review-page"><div className="review-heading"><div><span className="eyebrow">MAKE THE CALL</span><h1>Every rally tells a story.</h1></div><div className="review-coverage"><span><i/>{stats.coverage.classified ?? 0} outcomes logged</span><span>{stats.coverage.unresolved ?? 0} still to classify</span></div></div>
-    <div className={`editor-layout ${guidedKind ? 'logging' : ''}`}><section className="player-column"><div className={`video-stage ${cropMode ? 'crop-mode' : ''}`} style={{ aspectRatio: `${displayWidth}/${displayHeight}` }}><Video project={project} videoRef={video} onLoaded={() => { setPlaying(false); seek(project.position ?? rally?.start_time ?? 0); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); playRange.current = null; }} onTime={() => { const value = video.current?.currentTime ?? 0; setPosition(value); if (playRange.current && value >= playRange.current.end && playing) { if (loop) seek(playRange.current.start); else video.current?.pause(); } }} onClick={e => { if (!cropMode || !rally) return; const rect = e.currentTarget.getBoundingClientRect(); const keyframe = { time: position, x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height }; const keys = [...rally.crop_keyframes.filter(k => Math.abs(k.time - position) > .001), keyframe].sort((a, b) => a.time - b.time); void command('crop', { rally_id: rally.rally_id, crop_keyframes: keys }); setCropMode(false); }}/>{rally && <div className="video-corner-label">CLIP {project.selected + 1}<span>{timecode(rally.end_time - rally.start_time)}</span></div>}{cropMode && <div className="crop-hint">Click the framing center at {timecode(position)}</div>}</div>
-      <div className="playback-bar"><button className="play-button" onClick={play} aria-label={playing ? 'Pause video' : 'Play video'}><Icon name={playing ? 'pause' : 'play'} size={19}/></button><button className="button small seek-button" aria-label="Back five seconds" disabled={busy} onClick={() => seek(currentTime() - 5)}>−5s</button><button className="button small seek-button" aria-label="Forward five seconds" disabled={busy} onClick={() => seek(currentTime() + 5)}>+5s</button><span className="time-readout">{timecode(position)} <i>/</i> {timecode(project.video_duration)}</span><input disabled={busy} aria-label="Source playback position" type="range" min="0" max={project.video_duration} step="0.05" value={position} onChange={e => seek(Number(e.target.value))}/><label className="loop-toggle"><input type="checkbox" checked={loop} onChange={e => setLoop(e.target.checked)}/>Loop</label></div>
-      <div className="clip-toolbar"><div className="row"><button className="button small" disabled={busy || project.selected <= 0} onClick={() => adjacent(-1)}><Icon name="back"/>Previous</button><button className="button small" disabled={busy || project.selected >= project.rallies.length - 1} onClick={() => adjacent(1)}>Next<Icon name="arrow"/></button></div><div className="row"><button className={`button small ${rally?.starred ? 'starred' : ''}`} disabled={busy || !rally} onClick={() => rally && void command('star', { rally_id: rally.rally_id, starred: !rally.starred })}><Icon name="star"/>{rally?.starred ? 'Starred' : 'Star'}</button><button className="button small" disabled={busy || !!guidedKind || touchOpen} onClick={() => markStart === null ? markBegin() : void markEnd()}><Icon name="plus"/>{markStart === null ? 'Mark start' : 'Mark end'}</button></div></div>
-      {markStart !== null && <div className="notice">Start marked at {timecode(markStart)}. Seek to the end, then click Mark end (X).<button onClick={() => { setMarkStart(null); setMarkerError(''); }}>Cancel</button></div>}
+    <div className={`editor-layout ${guidedKind ? 'logging' : ''}`}><section className="player-column"><div className={`video-stage ${cropMode ? 'crop-mode' : ''}`} style={{ aspectRatio: `${displayWidth}/${displayHeight}` }}><Video project={project} videoRef={video} onLoaded={() => { setPlaying(false); seek(project.position ?? rally?.start_time ?? 0); }} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => { setPlaying(false); playRange.current = null; }} onTime={() => { const value = video.current?.currentTime ?? 0; setPosition(value); if (playRange.current && value >= playRange.current.end && playing) { if (loop) seek(playRange.current.start); else video.current?.pause(); } }} onClick={e => { if (!cropMode || !rally || clipActionsDisabled) return; const rect = e.currentTarget.getBoundingClientRect(); const keyframe = { time: position, x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height }; const keys = [...rally.crop_keyframes.filter(k => Math.abs(k.time - position) > .001), keyframe].sort((a, b) => a.time - b.time); void command('crop', { rally_id: rally.rally_id, crop_keyframes: keys }); setCropMode(false); }}/>{rally && <div className="video-corner-label">CLIP {project.selected + 1}<span>{timecode(rally.end_time - rally.start_time)}</span></div>}{cropMode && <div className="crop-hint">Click the framing center at {timecode(position)}</div>}</div>
+      <div className="playback-bar"><button className="play-button" onClick={play} aria-label={playing ? 'Pause video' : 'Play video'} disabled={editingBusy}><Icon name={playing ? 'pause' : 'play'} size={19}/></button><button className="button small seek-button" aria-label="Back five seconds" disabled={editingBusy} onClick={() => seek(currentTime() - 5)}>−5s</button><button className="button small seek-button" aria-label="Forward five seconds" disabled={editingBusy} onClick={() => seek(currentTime() + 5)}>+5s</button><span className="time-readout">{timecode(position)} <i>/</i> {timecode(project.video_duration)}</span><input disabled={editingBusy} aria-label="Source playback position" type="range" min="0" max={project.video_duration} step="0.05" value={position} onChange={e => seek(Number(e.target.value))}/><label className="loop-toggle"><input type="checkbox" disabled={editingBusy} checked={loop} onChange={e => setLoop(e.target.checked)}/>Loop</label></div>
+      <div className="clip-toolbar"><div className="row"><button className="button small" disabled={clipActionsDisabled || project.selected <= 0} onClick={() => adjacent(-1)}><Icon name="back"/>Previous</button><button className="button small" disabled={clipActionsDisabled || project.selected >= project.rallies.length - 1} onClick={() => adjacent(1)}>Next<Icon name="arrow"/></button></div><div className="row"><button className={`button small ${rally?.starred ? 'starred' : ''}`} disabled={clipActionsDisabled || !rally} onClick={() => rally && void command('star', { rally_id: rally.rally_id, starred: !rally.starred })}><Icon name="star"/>{rally?.starred ? 'Starred' : 'Star'}</button><button className="button small" disabled={editingBusy || !!guidedKind || touchOpen} onClick={() => markStart === null ? markBegin() : void markEnd()}><Icon name="plus"/>{markStart === null ? 'Mark start' : 'Mark end'}</button></div></div>
+      <div className="clip-exit-actions"><button className="button small" disabled={clipActionsDisabled || !rally} onClick={continueAfterClip}>Continue after clip<Icon name="arrow"/></button><button className="button small danger" disabled={clipActionsDisabled || !rally} onClick={() => void deleteClip()}><Icon name="trash"/>{deleting ? 'Deleting…' : 'Delete clip'}</button></div>
+      {markStart !== null && <div className="notice">Start marked at {timecode(markStart)}. Press W again to reset it, or seek to the end and press X.<button disabled={editingBusy} onClick={markBegin}>Reset start to playhead</button><button disabled={editingBusy} onClick={() => { setMarkStart(null); setMarkerError(''); }}>Cancel</button></div>}
       {markerError && <div className="notice warning-text" role="alert">{markerError}</div>}
       {playbackMessage && <div className="notice" role="status">{playbackMessage}<button onClick={() => void startPlayback()}>Resume</button></div>}
-      {project.explanation && <div className="classification-receipt" role="status"><Icon name="check"/><span>{project.explanation}</span><button disabled={busy || !project.can_undo} onClick={() => void command('undo')}>Undo</button></div>}
-      {!project.rallies.length && <div className="empty-editor"><h2>Your first rally starts here.</h2><p>Play the recording. Press <kbd>W</kbd> at the start of a rally and <kbd>X</kbd> at the end. Then choose its outcome.</p></div>}
+      {project.explanation && <div className="classification-receipt" role="status"><Icon name="check"/><span>{project.explanation}</span><button disabled={clipActionsDisabled || !project.can_undo} onClick={() => void command('undo')}>Undo</button></div>}
+      {!project.rallies.length && <div className="empty-editor"><h2>Your first rally starts here.</h2><p>Play the recording. Press <kbd>W</kbd> at the start of a rally and <kbd>X</kbd> at the end. Press W again to replace the start. Then choose its outcome.</p></div>}
     </section>
-    <aside className="outcome-panel" ref={outcomeFocus} tabIndex={-1} aria-label="Selected clip outcome">{rally && assignment ? <><div className="selected-clip-meta"><span>Clip {project.selected + 1} of {project.rallies.length}</span><span className={`status-pill ${rally.rejected ? 'rejected' : rally.classification.kind ? 'done' : ''}`}>{rally.rejected ? 'Not a rally' : rally.classification.kind ? labelFor(rally.classification.kind) : 'Needs outcome'}</span></div><div className="scoreboard"><span>{project.match_settings.team_a}</span><strong>{assignment.score_before[0]}<i>–</i>{assignment.score_before[1]}</strong><span>{project.match_settings.team_b}</span><small>SCORE ENTERING THIS CLIP</small></div><div className="serve-assignment"><span><i className="serving-dot"/>Server <strong>{names[assignment.server_id]}</strong></span><span>Receiver <strong>{names[assignment.receiver_id]}</strong></span></div>
-      {assignment.provisional && <div className="provisional-notice"><strong>Serving order is provisional</strong><p>An earlier clip needs an outcome before this point can be scored.</p>{firstMissing && <button className="button small" onClick={() => void select(firstMissing)}>Go to missing outcome<Icon name="arrow"/></button>}</div>}
-      {!guidedKind && <><h2>What happened?</h2><div className="outcome-groups">{groups.map(group => <div key={group.title} className={group.className}><div className="outcome-group-title">{group.title}</div>{group.actions.map(([kind, label, description, key]) => <button className={`outcome-button ${rally.classification.kind === kind ? 'selected' : ''}`} key={kind} disabled={busy || !!guidedKind || markStart !== null || rally.rejected || assignment.provisional} onClick={() => void classify(kind)}><span><strong>{label}</strong><small>{description}</small></span><kbd>{key}</kbd></button>)}</div>)}</div></>}
-      {guidedKind && <QuickLogEditor key={`${rally.rally_id}-${guidedKind}`} project={project} rally={rally} assignment={assignment} kind={guidedKind} busy={busy} onReplay={replay} onCancel={() => setGuidedKind(null)} onSave={log => commitPoint(guidedKind, log)}/>}
-      <details className="trim-details"><summary>Trim clip <span>{timecode(rally.start_time)} – {timecode(rally.end_time)}</span></summary><Trim key={`${rally.rally_id}-${rally.start_time}-${rally.end_time}`} rally={rally} duration={project.video_duration} command={command} position={position} busy={busy}/></details>
-      <details className="more-details"><summary>More details <span>Touches & caption</span></summary><button className="button small wide" disabled={busy || !!guidedKind || rally.rejected} onClick={() => setTouchOpen(true)}>{rally.classification.kind?.startsWith('defensive') ? 'Add defensive touches' : 'Log touch details'}</button>{rally.point_stats.quick_log && <button className="button small wide" disabled={busy || !!guidedKind} onClick={() => { video.current?.pause(); setGuidedKind(rally.classification.kind!); }}>Edit quick log</button>}<p className="helper">Guided player details support RPR. Full touch details add receive and set quality.</p><Caption key={`${rally.rally_id}-${rally.note}`} rally={rally} command={command} busy={busy}/></details>
-      <div className="clip-menu-container"><button className="button small wide" disabled={busy} onClick={() => setMenuOpen(!menuOpen)}>Clip actions<Icon name="chevron"/></button>{menuOpen && <div className="clip-menu"><button onClick={() => moreCommand('split', { time: position })} disabled={position <= rally.start_time || position >= rally.end_time}>Split at playhead</button><button disabled={project.selected >= project.rallies.length - 1} onClick={() => moreCommand('merge', { rally_ids: [rally.rally_id, project.rallies[project.selected + 1]?.rally_id] })}>Merge with next clip</button><button onClick={() => { setCropMode(true); setMenuOpen(false); }}>Add crop center at playhead</button><button onClick={() => moreCommand('crop', { crop_keyframes: [] })} disabled={!rally.crop_keyframes.length}>Clear crop centers</button><button onClick={() => moreCommand('clear_classification')} disabled={!rally.classification.kind}>Clear outcome</button><button onClick={() => moreCommand('export_enabled', { enabled: !rally.enabled })} disabled={rally.rejected}>{rally.enabled ? 'Exclude from exported video' : 'Include in exported video'}</button><button className="danger" onClick={() => moreCommand('reject', { rejected: !rally.rejected })}>{rally.rejected ? 'Restore as a rally' : 'Not a rally'}</button></div>}</div>
+    <aside className="outcome-panel" ref={outcomeFocus} tabIndex={-1} aria-label="Selected clip outcome">{rally && assignment && card ? <><div className="selected-clip-meta"><span>Clip {project.selected + 1} of {project.rallies.length}</span><span className={`status-pill ${rally.rejected ? 'rejected' : rally.classification.kind ? 'done' : ''}`}>{rally.rejected ? 'Not a rally' : rally.classification.kind ? labelFor(rally.classification.kind) : 'Needs outcome'}</span></div><div className="scoreboard"><span>{project.match_settings.team_a}</span><strong>{card.score[0]}<i>–</i>{card.score[1]}</strong><span>{project.match_settings.team_b}</span><small>{completed ? 'SCORE AFTER THIS CLIP' : 'SCORE ENTERING THIS CLIP'}</small></div><div className="serve-assignment" aria-label="Serving pair for selected clip"><span><i className="serving-dot"/>Server <strong>{names[assignment.server_id]}</strong></span><span>Receiver <strong>{names[assignment.receiver_id]}</strong></span></div>
+      {completed && <div className="next-serve-assignment" aria-label="Serving pair after selected clip"><span>Next server <strong>{names[card.server]}</strong></span><span>Next receiver <strong>{names[card.receiver]}</strong></span></div>}
+      {logConflict && <div className="player-log-warning" role="alert"><strong>Player log needs review</strong><p>An earlier edit changed this clip’s serving pair. Its saved touches still name {names[rally.point_stats.server_id ?? ''] ?? 'a different server'} serving to {names[rally.point_stats.receiver_id ?? ''] ?? 'a different receiver'}. Review the recorded players for the serving pair shown above.</p><button className="button small" disabled={clipActionsDisabled || assignment.provisional} onClick={reviewPlayerLog}>Review player log</button></div>}
+      {assignment.provisional && <div className="provisional-notice"><strong>Serving order is provisional</strong><p>An earlier clip needs an outcome before this point can be scored.</p>{firstMissing && <button className="button small" disabled={clipActionsDisabled} onClick={() => void select(firstMissing)}>Go to missing outcome<Icon name="arrow"/></button>}</div>}
+      {!guidedKind && <><h2>What happened?</h2><div className="outcome-groups">{groups.map(group => <div key={group.title} className={group.className}><div className="outcome-group-title">{group.title}</div>{group.actions.map(([kind, label, description, key]) => <button className={`outcome-button ${rally.classification.kind === kind ? 'selected' : ''}`} key={kind} disabled={clipActionsDisabled || rally.rejected || assignment.provisional} onClick={() => void classify(kind)}><span><strong>{label}</strong><small>{description}</small></span><kbd>{key}</kbd></button>)}</div>)}</div></>}
+      {guidedKind && <QuickLogEditor key={`${rally.rally_id}-${guidedKind}`} project={project} rally={rally} assignment={assignment} kind={guidedKind} busy={editingBusy} onReplay={replay} onCancel={() => setGuidedKind(null)} onSave={log => commitPoint(guidedKind, log)}/>}
+      <details className="trim-details"><summary>Trim clip <span>{timecode(rally.start_time)} – {timecode(rally.end_time)}</span></summary><Trim key={`${rally.rally_id}-${rally.start_time}-${rally.end_time}`} rally={rally} duration={project.video_duration} command={command} position={position} busy={clipActionsDisabled}/></details>
+      <details className="more-details"><summary>More details <span>Touches & caption</span></summary><button className="button small wide" disabled={clipActionsDisabled || rally.rejected || assignment.provisional} onClick={() => setTouchOpen(true)}>{rally.classification.kind?.startsWith('defensive') ? 'Add defensive touches' : 'Log touch details'}</button>{rally.point_stats.quick_log && <button className="button small wide" disabled={clipActionsDisabled || rally.rejected || assignment.provisional} onClick={() => { video.current?.pause(); setGuidedKind(rally.classification.kind!); }}>Edit quick log</button>}<p className="helper">Guided player details support RPR. Full touch details add receive and set quality.</p><Caption key={`${rally.rally_id}-${rally.note}`} rally={rally} command={command} busy={clipActionsDisabled}/></details>
+      <div className="clip-menu-container"><button className="button small wide" disabled={clipActionsDisabled} onClick={() => setMenuOpen(!menuOpen)}>Clip actions<Icon name="chevron"/></button>{menuOpen && !clipActionsDisabled && <div className="clip-menu"><button onClick={() => moreCommand('split', { time: position })} disabled={position <= rally.start_time || position >= rally.end_time}>Split at playhead</button><button disabled={project.selected >= project.rallies.length - 1} onClick={() => moreCommand('merge', { rally_ids: [rally.rally_id, project.rallies[project.selected + 1]?.rally_id] })}>Merge with next clip</button><button onClick={() => { setCropMode(true); setMenuOpen(false); }}>Add crop center at playhead</button><button onClick={() => moreCommand('crop', { crop_keyframes: [] })} disabled={!rally.crop_keyframes.length}>Clear crop centers</button><button onClick={() => moreCommand('clear_classification')} disabled={!rally.classification.kind}>Clear outcome</button><button onClick={() => moreCommand('export_enabled', { enabled: !rally.enabled })} disabled={rally.rejected}>{rally.enabled ? 'Exclude from exported video' : 'Include in exported video'}</button><button className="danger" onClick={() => moreCommand('reject', { rejected: !rally.rejected })}>{rally.rejected ? 'Restore as a rally' : 'Not a rally'}</button></div>}</div>
     </> : <div className="outcome-empty"><Icon name="video" size={36}/><h2>Let’s find your first clip.</h2><p>Mark a start and end in the video. Your outcome buttons will appear here.</p><button className="button" onClick={() => void command('stage', { stage: 'find' })}>Find rallies automatically</button></div>}</aside></div>
-    <section className="filmstrip-section"><div className="filmstrip-heading"><div><strong>Match timeline</strong><span>{project.rallies.length} clips · source timestamps</span></div><div className="filter-tabs">{[['all', 'All clips'], ['pending', 'Needs outcome'], ['stars', 'Starred'], ['excluded', 'Excluded']].map(([key, label]) => <button className={filter === key ? 'active' : ''} key={key} onClick={() => setFilter(key)}>{label}</button>)}</div></div><div className="filmstrip">{visible.map(r => <button key={r.rally_id} className={`filmstrip-clip ${r.rally_id === rally?.rally_id ? 'selected' : ''} ${r.rejected ? 'rejected' : ''}`} disabled={busy} onClick={() => void select(r)}><div><img loading="lazy" src={thumbnailUrl(project.project_id, r.start_time, 240)} alt=""/><span>{project.rallies.indexOf(r) + 1}</span>{r.starred && <Icon name="star" size={14}/>}</div><strong>{r.rejected ? 'Not a rally' : labelFor(r.classification.kind) || (r.winner ? 'Legacy point' : 'Needs outcome')}</strong><small>{timecode(r.start_time)}{!r.enabled && !r.rejected ? ' · Export excluded' : ''}</small></button>)}{!visible.length && <p className="helper">{project.rallies.length ? 'No clips match this filter.' : 'Your clips will appear here as you mark them.'}</p>}</div></section>
-    <footer className="editor-footer"><span><kbd>Space</kbd>Play / pause <kbd>1–8</kbd>Outcome <kbd>← →</kbd>Seek 5s <kbd>[ ]</kbd>Previous / next <kbd>W X</kbd>Mark start / end</span><button onClick={onStats}><Icon name="stats"/>View match statistics</button></footer>
+    <section className="filmstrip-section"><div className="filmstrip-heading"><div><strong>Match timeline</strong><span>{project.rallies.length} clips · source timestamps</span></div><div className="filter-tabs">{[['all', 'All clips'], ['pending', 'Needs outcome'], ['stars', 'Starred'], ['excluded', 'Excluded']].map(([key, label]) => <button className={filter === key ? 'active' : ''} key={key} onClick={() => setFilter(key)}>{label}</button>)}</div></div><div className="filmstrip">{visible.map(r => <button key={r.rally_id} className={`filmstrip-clip ${r.rally_id === rally?.rally_id ? 'selected' : ''} ${r.rejected ? 'rejected' : ''}`} disabled={clipActionsDisabled} onClick={() => void select(r)}><div><img loading="lazy" src={thumbnailUrl(project.project_id, r.start_time, 240)} alt=""/><span>{project.rallies.indexOf(r) + 1}</span>{r.starred && <Icon name="star" size={14}/>}</div><strong>{r.rejected ? 'Not a rally' : labelFor(r.classification.kind) || (r.winner ? 'Legacy point' : 'Needs outcome')}</strong><small>{timecode(r.start_time)}{!r.enabled && !r.rejected ? ' · Export excluded' : ''}</small></button>)}{!visible.length && <p className="helper">{project.rallies.length ? 'No clips match this filter.' : 'Your clips will appear here as you mark them.'}</p>}</div></section>
+    <footer className="editor-footer"><span><kbd>Space</kbd>Play / pause <kbd>1–8</kbd>Outcome <kbd>← →</kbd>Seek 5s <kbd>[ ]</kbd>Previous / next <kbd>W X</kbd>Set or reset start / mark end</span><button disabled={clipActionsDisabled} onClick={onStats}><Icon name="stats"/>View match statistics</button></footer>
     {touchOpen && rally && assignment && <Touches project={project} rally={rally} command={command} onClose={() => setTouchOpen(false)}/>}
   </main>;
 }
 
 function Trim({ rally, duration, command, position, busy }: { rally: Rally; duration: number; command: Command; position: number; busy: boolean }) {
-  const [start, setStart] = useState(rally.start_time); const [end, setEnd] = useState(rally.end_time);
-  return <form onSubmit={e => { e.preventDefault(); void command('trim', { rally_id: rally.rally_id, start_time: start, end_time: end }); }}><div className="row"><label>In (seconds)<input type="number" min="0" max={duration} step="0.01" value={start} onChange={e => setStart(Number(e.target.value))}/><button type="button" className="text-button" onClick={() => setStart(position)}>Use playhead</button></label><label>Out (seconds)<input type="number" min="0" max={duration} step="0.01" value={end} onChange={e => setEnd(Number(e.target.value))}/><button type="button" className="text-button" onClick={() => setEnd(position)}>Use playhead</button></label></div><button className="button small wide" type="submit" disabled={busy || end <= start || end > duration}>Save trim</button></form>;
+  return <ClipTrim startTime={rally.start_time} endTime={rally.end_time} duration={duration} busy={busy} position={position}
+    onSave={(start, end) => command('trim', { rally_id: rally.rally_id, start_time: start, end_time: end })}/>;
 }
 function Caption({ rally, command, busy }: { rally: Rally; command: Command; busy: boolean }) {
   const [value, setValue] = useState(rally.note);
-  return <form onSubmit={e => { e.preventDefault(); void command('caption', { rally_id: rally.rally_id, note: value }); }}><label>Caption<input value={value} onChange={e => setValue(e.target.value)} placeholder="A note for this moment" maxLength={2000}/></label><button className="button small wide" disabled={busy || value === rally.note}>Save caption</button></form>;
+  return <form onSubmit={e => { e.preventDefault(); if (busy) return; void command('caption', { rally_id: rally.rally_id, note: value }); }}><label>Caption<input value={value} onChange={e => setValue(e.target.value)} placeholder="A note for this moment" maxLength={2000}/></label><button className="button small wide" disabled={busy || value === rally.note}>Save caption</button></form>;
 }
 const touchResults: Record<string, string[]> = { serve: ['in', 'ace', 'fault', 'rim', 'let'], receive: ['strong', 'weak', 'error', 'unknown'], set: ['strong', 'weak', 'error', 'unknown'], hit: ['auto', 'put_away', 'returned', 'error'], defense: ['auto', 'get', 'touch_not_returned', 'no_touch'] };
 function Touches({ project, rally, command, onClose }: { project: Project; rally: Rally; command: Command; onClose: () => void }) {

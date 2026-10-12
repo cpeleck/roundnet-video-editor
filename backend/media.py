@@ -120,13 +120,16 @@ class MediaService:
                     temporary.unlink(missing_ok=True)
         return destination
 
-    def card(self, project_id: str, aspect_ratio: str = "source") -> Path:
-        from video.presentation import crop_dimensions, match_statistics, render_player_end_card
+    def card(self, project_id: str, aspect_ratio: str = "source", resolution: str | None = None) -> Path:
+        from video.presentation import export_dimensions, match_statistics, render_player_end_card
 
         state = self.projects.get_state(project_id)
         _, _, metadata = self.source(project_id)
-        options = export_options(state, {"aspect_ratio": aspect_ratio})
-        width, height = crop_dimensions(*metadata.display_resolution, options["aspect_ratio"])
+        changes = {"aspect_ratio": aspect_ratio}
+        if resolution is not None:
+            changes["resolution"] = resolution
+        options = export_options(state, changes)
+        width, height = export_dimensions(*metadata.display_resolution, options["aspect_ratio"], options["resolution"])
         summary = match_statistics(state.get("rallies", []), options)
         # Render at final output size, then let the browser scale the same PNG.
         key = hashlib.sha256(json.dumps({"width": width, "height": height, "summary": summary}, sort_keys=True, allow_nan=False).encode()).hexdigest()
@@ -162,8 +165,8 @@ def install_media_routes(app: Any, service: Any, media: MediaService | None = No
             headers={"Cache-Control": "private, max-age=3600"})
 
     @router.get("/api/projects/{project_id}/card")
-    def card(project_id: str, aspect_ratio: str = "source") -> FileResponse:
-        return FileResponse(media.card(project_id, aspect_ratio), media_type="image/png",
+    def card(project_id: str, aspect_ratio: str = "source", resolution: str | None = None) -> FileResponse:
+        return FileResponse(media.card(project_id, aspect_ratio, resolution), media_type="image/png",
             headers={"Cache-Control": "no-cache"})
 
     @router.get("/api/projects/{project_id}/branding")
