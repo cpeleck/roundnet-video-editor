@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171b18">
+  <meta name="description" content="Turn roundnet footage into match clips and highlights. Open-source local editing, unlimited exports, and no watermarks. Your match. Your video. Your branding.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://roundnet-rally-editor.expertkiwi64.chatgpt.site/">
+  <link rel="canonical" href="https://roundnet-rally-editor.expertkiwi64.chatgpt.site/">
+  <meta property="og:title" content="Roundnet — Your match. Your video. Your branding.">
+  <meta property="og:description" content="An open-source rally editor with unlimited clean exports. Find your rallies, build your highlights, and keep your footage on your Mac.">
+  <title>Roundnet — Your match. Your video. Your branding.</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="shell header-inner">
+      <a class="brand" href="#" aria-label="Roundnet home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Roundnet<span class="brand-caption">THE RALLY EDITOR</span></span></a>
+      <button class="menu-toggle" type="button" aria-label="Open navigation" aria-controls="site-navigation" aria-expanded="false"><span></span><span></span></button>
+      <nav id="site-navigation" class="site-nav" aria-label="Main navigation">
+        <a href="#editor">The editor</a><a href="#promise">Our promise</a>
+        <a class="button button-small button-outline" href="#get-started">Get started <span aria-hidden="true">↗</span></a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero shell" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="status-dot"></span> OPEN SOURCE. ON YOUR TERMS.</p>
+        <h1 id="hero-title">Good games.<br>Great replays.<br><em>All yours.</em></h1>
+        <p class="hero-description">Find your rallies. Build your highlights. Share the match.<br class="desktop-break"> An editor built for roundnet, with nothing added that you didn’t choose.</p>
+        <div class="hero-actions"><a class="button button-primary" href="#get-started">Get the editor <span aria-hidden="true">↗</span></a><a class="text-link" href="#editor">Explore the workflow <span aria-hidden="true">↓</span></a></div>
+        <div class="hero-assurances"><span><svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>No watermarks</span><span><svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>Unlimited exports</span><span><svg aria-hidden="true" viewBox="0 0 16 16"><path d="m3 8 3 3 7-7"/></svg>Runs locally</span></div>
+      </div>
+
+      <div class="hero-visual">
+        <div class="orbit-decoration" aria-hidden="true"></div>
+        <div class="editor-window">
+          <div class="window-top"><div class="window-dots" aria-hidden="true"><i></i><i></i><i></i></div><span>WEEKEND SESSION</span><span class="local-indicator"><i></i>LOCAL</span></div>
+          <div class="demo-toolbar"><span class="demo-label">YOUR CUT, YOUR CALL</span><div class="demo-tabs" role="group" aria-label="Illustrative export selection"><button type="button" data-mode="match" aria-pressed="true">Full match</button><button type="button" data-mode="highlights" aria-pressed="false">Highlights</button></div></div>
+          <div class="court-scene">
+            <div class="demo-score" aria-label="Illustrative scoreboard"><span>NORTH</span><strong id="demo-score">08 <i>–</i> 06</strong><span>SOUTH</span></div>
+            <svg class="court-illustration" viewBox="0 0 600 360" role="img" aria-labelledby="court-title court-desc">
+              <title id="court-title">A schematic roundnet court with four player positions</title><desc id="court-desc">An illustrative court setup, showing the playing area, serving zones, and a net. This is a diagram, not footage.</desc>
+              <defs>
+                <radialGradient id="ground"><stop stop-color="#44513a"/><stop offset="1" stop-color="#293327"/></radialGradient>
+                <pattern id="grass-grid" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0H0V30" fill="none" stroke="#869371" stroke-opacity=".13" stroke-width=".5"/></pattern>
+                <pattern id="net-mesh" width="9" height="9" patternUnits="userSpaceOnUse"><path d="M9 0H0V9" fill="none" stroke="#aec176" stroke-opacity=".6" stroke-width=".8"/></pattern>
+                <g id="player"><ellipse cy="37" rx="18" ry="7" fill="#152015" opacity=".6"/><path d="M-8 15-11 34M7 15 12 34" stroke="currentColor" stroke-width="7" stroke-linecap="round"/><path d="M-7-5H7L10 17H-10Z" fill="currentColor"/><path d="M-7 0-19 10M7 0 19-7" stroke="currentColor" stroke-width="6" stroke-linecap="round"/><circle cy="-15" r="8" fill="currentColor"/></g>
+              </defs>
+              <rect width="600" height="360" fill="url(#ground)"/><rect width="600" height="360" fill="url(#grass-grid)"/>
+              <path d="M72 80 524 54 548 286 53 313Z" fill="none" stroke="#dfed9e" stroke-opacity=".45" stroke-dasharray="7 7"/>
+              <g stroke="#b3c878" stroke-width="1" fill="#dfed9e" fill-opacity=".03" stroke-opacity=".4"><path d="m106 96 110-13 21 78-106 15Z"/><path d="m359 88 119 6-7 85-112-11Z"/><path d="m110 213 115-2-5 86-127 3Z"/><path d="m365 209 119 2 25 82-135-7Z"/></g>
+              <ellipse cx="300" cy="200" rx="135" ry="86" fill="none" stroke="#a9bc80" stroke-opacity=".25" stroke-dasharray="3 6"/>
+              <ellipse cx="300" cy="225" rx="56" ry="14" fill="#111b13" opacity=".4"/>
+              <path d="M259 202v27M341 202v27M289 215v18M311 176v18" stroke="#bbcb7b" stroke-width="4"/>
+              <ellipse cx="300" cy="195" rx="49" ry="28" fill="#273022"/><ellipse cx="300" cy="195" rx="45" ry="24" fill="url(#net-mesh)"/><ellipse cx="300" cy="195" rx="49" ry="28" fill="none" stroke="#dfed9e" stroke-width="5"/>
+              <g id="diagram-players"><use href="#player" transform="translate(168 126) rotate(-10)" color="#d9e7a0"/><use href="#player" transform="translate(423 123) rotate(10)" color="#aac3d4"/><use href="#player" transform="translate(175 255) rotate(-8)" color="#aac3d4"/><use href="#player" transform="translate(418 244) rotate(10)" color="#d9e7a0"/></g>
+              <path d="M191 120Q262 89 292 167" fill="none" stroke="#dfed9e" stroke-width="1.5" stroke-dasharray="4 5" opacity=".65"/><circle cx="256" cy="117" r="5" fill="#dfed9e"/>
+              <g fill="#bfccb0" font-family="Arial, sans-serif" font-size="9" letter-spacing="1.2"><text x="89" y="73">PLAYING AREA</text><text x="340" y="319">NET + SERVING ZONES</text></g>
+              <g fill="none" stroke="#dfed9e" stroke-width="2"><path d="M72 91V80h11M513 55h11l1 11M547 276l1 10-11 1M53 302v11l11-1"/></g>
+            </svg>
+            <div class="scene-footer"><span id="sample-name">Rally 02 · Sideout</span><span id="sample-time">00:36 – 00:44</span></div>
+          </div>
+          <div class="demo-timeline"><div class="timeline-heading"><span>SELECT A SAMPLE CLIP</span><span id="clip-summary" aria-live="polite">4 clips · 42 seconds</span></div><div id="sample-clips" class="sample-clips"><button class="sample-clip" type="button" data-clip="0" aria-label="Select sample rally 1" aria-pressed="false"><span>01</span><i></i><small>10s</small></button><button class="sample-clip is-selected is-starred" type="button" data-clip="1" aria-label="Select sample rally 2, highlight" aria-pressed="true"><span>02 <b aria-hidden="true">✦</b></span><i></i><small>8s</small></button><button class="sample-clip" type="button" data-clip="2" aria-label="Select sample rally 3" aria-pressed="false"><span>03</span><i></i><small>9s</small></button><button class="sample-clip is-starred" type="button" data-clip="3" aria-label="Select sample rally 4, highlight" aria-pressed="false"><span>04 <b aria-hidden="true">✦</b></span><i></i><small>15s</small></button></div></div>
+        </div>
+        <div class="visual-caption"><span class="caption-line"></span>ILLUSTRATIVE EDITOR PREVIEW <span class="caption-dot">·</span> TRY MATCH / HIGHLIGHTS</div>
+      </div>
+    </section>
+
+    <div class="principles-strip"><div class="shell strip-inner"><span>MADE FOR THE MATCH</span><p>More of the game.<span>Less of the in-between.</span></p><span class="strip-symbol" aria-hidden="true">✳</span></div></div>
+
+    <section class="workflow shell section-space" id="editor" aria-labelledby="workflow-title">
+      <div class="section-heading"><p class="eyebrow">FROM THE FIRST SERVE TO THE FINAL POINT</p><h2 id="workflow-title">Find the play.<br><em>Keep the feeling.</em></h2><p>Turn a long recording into a match people want to watch.<br class="desktop-break"> Automatic suggestions get you started. Every cut stays in your hands.</p></div>
+      <div class="workflow-steps">
+        <article class="workflow-step"><span class="step-number">01 / SET UP</span><div class="step-art art-court" aria-hidden="true"><div class="mini-boundary"><span class="mini-net"></span><i></i><i></i><i></i><i></i></div><span class="art-caption">MARK YOUR PLAYING AREA</span></div><h3>Give it a place to look.</h3><p>Import your recording. Mark the court, net, and serving zones to help the detector focus on your game.</p></article>
+        <article class="workflow-step"><span class="step-number">02 / FIND & REVIEW</span><div class="step-art art-clips" aria-hidden="true"><div class="signal-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="mini-clips"><i></i><i></i><i></i><i></i></div><span class="art-caption">SUGGESTED CUTS. YOUR FINAL SAY.</span></div><h3>Get straight to the rallies.</h3><p>Motion, body-pose cues, and sound help suggest clips. Review the boundaries, add missed rallies, and tag what happened.</p></article>
+        <article class="workflow-step"><span class="step-number">03 / MAKE & SHARE</span><div class="step-art art-export" aria-hidden="true"><div class="aspect landscape"><span class="export-net"></span></div><div class="aspect portrait"><span class="export-net"></span></div><span class="art-caption">MATCH CUTS + SOCIAL HIGHLIGHTS</span></div><h3>Make the replay your own.</h3><p>Export a full match or a highlight reel. Choose your framing, scoreboards, stats, and graphics. Share a clean MP4.</p></article>
+      </div>
+      <div class="workflow-footnote"><span class="small-net" aria-hidden="true">✳</span><p>Prefer to find your own clips? Manual editing is built in, too.</p><a class="text-link" href="https://github.com/cpeleck/roundnet-video-editor#readme" target="_blank" rel="noopener noreferrer">Explore the features <span aria-hidden="true">↗</span></a></div>
+    </section>
+
+    <section class="promise-section" id="promise" aria-labelledby="promise-title"><div class="shell promise-grid">
+      <div class="promise-intro"><p class="eyebrow">OUR NAME DOESN’T NEED TO BE ON YOUR VIDEO</p><h2 id="promise-title">Your match.<br>Your video.<br><em>Your branding.</em></h2><p>We build the editor. You decide what goes into the frame.</p><a class="text-link" href="./LICENSE.txt">Read the MIT license <span aria-hidden="true">↗</span></a></div>
+      <div class="promise-list">
+        <article><span aria-hidden="true">01</span><div><h3>A clean export. Every time.</h3><p>No Roundnet watermark, promotional intro, outro, or required credit. Keep your video clean, or add your team and sponsor graphics.</p></div></article>
+        <article><span aria-hidden="true">02</span><div><h3>Your next export is free, too.</h3><p>No export counter and no payment to remove our branding. Local editing and unlimited exports are free.</p></div></article>
+        <article><span aria-hidden="true">03</span><div><h3>Your footage stays with you.</h3><p>Editing and rendering happen on your Mac. The local editor needs no account or cloud upload.</p></div></article>
+        <article><span aria-hidden="true">04</span><div><h3>Open for the community.</h3><p>Read the code, improve it, or build on it under the MIT license. Optional future services will leave local clean exports available to everyone.</p></div></article>
+      </div>
+    </div></section>
+
+    <section class="community shell section-space" aria-labelledby="community-title"><div class="community-wordmark" aria-hidden="true"><span class="brand-mark"><i></i><i></i><i></i></span></div><div><p class="eyebrow">A BETTER REPLAY, BUILT TOGETHER</p><h2 id="community-title">Free to use.<br><em>Open to improve.</em></h2><p>Help shape the editor around real games. Report a rough edge, suggest a feature, or contribute code. The project grows through the people who use it.</p><div class="community-actions"><a class="text-link" href="https://github.com/cpeleck/roundnet-video-editor" target="_blank" rel="noopener noreferrer">Explore the source <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/cpeleck/roundnet-video-editor/issues" target="_blank" rel="noopener noreferrer">Share feedback <span aria-hidden="true">↗</span></a></div></div><div class="community-note"><span>THE BUSINESS WE WANT TO BUILD</span><p>Support the project.<br>Keep the game free.</p><small>Voluntary support and optional services can fund development. They belong outside your exported video.</small></div></section>
+
+    <section class="faq shell section-space" aria-labelledby="faq-title"><div><p class="eyebrow">A FEW THINGS WORTH KNOWING</p><h2 id="faq-title">Before the<br><em>first serve.</em></h2></div><div class="faq-list">
+      <details><summary>Is the editor really free?<span aria-hidden="true">+</span></summary><p>Yes. The official local editor has unlimited exports, with no Roundnet watermarks or forced promotional content. The project-authored code is MIT licensed. Optional future support or services will not be required for local clean exports.</p></details>
+      <details><summary>How does automatic rally detection work?<span aria-hidden="true">+</span></summary><p>It combines computer vision, motion, audio, and body-pose cues with scoring rules to suggest rally boundaries. It needs your review and can miss plays or include false detections. Outcomes and player identities are entered by you. Real-game accuracy has not yet been established on a labeled benchmark.</p></details>
+      <details><summary>What do I need to run it?<span aria-hidden="true">+</span></summary><p>The editor currently targets macOS and uses a developer setup with Python and FFmpeg. The browser interface also uses Node.js. The setup guide covers installation. A packaged desktop installer is not available yet.</p></details>
+      <details><summary>Can I use it from my phone?<span aria-hidden="true">+</span></summary><p>You can review and edit in your phone’s browser while it is connected to the Mac on the same trusted Wi-Fi. The Mac runs the editor and renders the video. This is a companion browser workflow, rather than a standalone iPhone app.</p></details>
+      <details><summary>Can I add my own scoreboard and branding?<span aria-hidden="true">+</span></summary><p>Yes. Include the built-in scoreboard, stats end card, and captions if you want them, and supply a PNG for your own team or sponsor graphic. Those elements are optional. A clean export carries no required Roundnet branding.</p></details>
+    </div></section>
+
+    <section class="get-started shell" id="get-started" aria-labelledby="start-title"><div class="start-panel"><div><p class="eyebrow">THE NEXT GREAT REPLAY IS ALREADY IN YOUR CAMERA ROLL</p><h2 id="start-title">Bring your<br><em>next match.</em></h2><p>Get Roundnet, keep the good stuff, and make it yours.</p><div class="start-actions"><a class="button button-dark" href="https://github.com/cpeleck/roundnet-video-editor#requirements-and-installation" target="_blank" rel="noopener noreferrer">Open the setup guide <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/cpeleck/roundnet-video-editor" target="_blank" rel="noopener noreferrer">View source <span aria-hidden="true">↗</span></a></div><p class="setup-note">macOS · Developer setup · No account required</p></div><div class="start-net" aria-hidden="true"><i></i><i></i><i></i></div></div></section>
+  </main>
+
+  <footer class="site-footer shell"><div class="footer-top"><a class="brand" href="#" aria-label="Roundnet home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span>Roundnet</span></a><p>Your match. Your video. Your branding.</p><div><a href="https://github.com/cpeleck/roundnet-video-editor" target="_blank" rel="noopener noreferrer">GitHub ↗</a><a href="./LICENSE.txt">MIT license ↗</a></div></div><div class="footer-bottom"><span>© 2026 Christian Peleck and contributors</span><span>BUILT FOR THE GAME. OPEN TO EVERYONE.</span></div></footer>
+</body>
+</html>

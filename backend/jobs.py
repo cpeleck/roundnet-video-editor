@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 
 from application.jobs import JobManager
 from .phone import check_settings, is_remote
+from .admin import require_admin
 
 
 def install_job_routes(app: Any, service: Any, manager: JobManager | None = None) -> JobManager:
@@ -35,22 +36,26 @@ def install_job_routes(app: Any, service: Any, manager: JobManager | None = None
         return jobs.start(project_id, "export", body)
 
     @router.get("/api/jobs/{job_id}")
-    def get_job(job_id: str) -> dict[str, Any]:
+    def get_job(job_id: str, request: Request) -> dict[str, Any]:
         try:
-            return jobs.get(job_id)
+            job = jobs.get(job_id)
         except KeyError as exc:
             raise HTTPException(404, "Job not found") from exc
+        if job["kind"] == "benchmark":
+            require_admin(request)
+        return job
 
     @router.post("/api/jobs/{job_id}/cancel")
-    def cancel_job(job_id: str) -> dict[str, Any]:
+    def cancel_job(job_id: str, request: Request) -> dict[str, Any]:
+        get_job(job_id, request)
         try:
             return jobs.cancel(job_id)
         except KeyError as exc:
             raise HTTPException(404, "Job not found") from exc
 
     @router.get("/api/jobs/{job_id}/output")
-    def output(job_id: str) -> FileResponse:
-        job = get_job(job_id)
+    def output(job_id: str, request: Request) -> FileResponse:
+        job = get_job(job_id, request)
         if job["kind"] != "export" or job["status"] != "succeeded":
             raise HTTPException(409, "This job has no completed export")
         return FileResponse(job["result"]["output_path"], media_type="video/mp4", filename="roundnet-export.mp4")

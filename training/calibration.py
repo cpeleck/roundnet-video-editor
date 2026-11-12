@@ -75,6 +75,7 @@ def train_from_feedback(
     regularization: float = 0.05,
     progress: Callable[[str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
+    boundary_tolerance_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Evaluate by whole recording, fit a final model, and save JSON.
 
@@ -85,6 +86,7 @@ def train_from_feedback(
     """
     if not math.isfinite(regularization) or regularization <= 0:
         raise ValueError("regularization must be finite and positive")
+    _validate_boundary_tolerance(boundary_tolerance_seconds)
     destination = Path(output_path).expanduser()
     if not destination.parent.is_dir():
         raise ValueError("The profile destination folder does not exist.")
@@ -133,6 +135,7 @@ def train_from_feedback(
     heuristic_sample = dict(learned_sample)
     learned_events: list[dict[str, Any]] = []
     heuristic_events: list[dict[str, Any]] = []
+    motion_events: list[dict[str, Any]] = []
     for index, held_out in enumerate(recordings):
         _check_cancel(cancelled)
         if progress:
@@ -151,6 +154,10 @@ def train_from_feedback(
             "held_out_source_id": held_out.source_id,
             "training_source_ids": [item.source_id for item in training],
             "source_file": held_out.path.name,
+            "feedback_path": str(held_out.path),
+            "source_title": held_out.metadata.get("benchmark", {}).get("title", held_out.path.name),
+            "duration_seconds": held_out.duration,
+            "analysis_settings": config.to_dict(),
             "sample_count": int(np.count_nonzero(held_out.labels >= 0)),
             "learned_samples": _classification_metrics(learned_counts),
             "heuristic_samples": _classification_metrics(heuristic_counts),
@@ -170,8 +177,27 @@ def train_from_feedback(
                 motion_spread_scores=_column(held_out, "motion_spread"),
                 serve_scores=_column(held_out, "serve_likelihood"),
             )
-            fold["learned_events"] = evaluate_intervals(learned, truth, held_out.duration)
-            fold["heuristic_events"] = evaluate_intervals(baseline_rallies, truth, held_out.duration)
+            match_options = {"boundary_tolerance_seconds": boundary_tolerance_seconds}
+            fold["learned_events"] = evaluate_intervals(learned, truth, held_out.duration, **match_options)
+            fold["heuristic_events"] = evaluate_intervals(baseline_rallies, truth, held_out.duration, **match_options)
+            motion = _column(held_out, "roi_motion")
+            if motion is None:
+                motion = _column(held_out, "motion")
+            fold["reference_intervals"] = truth
+            fold["predicted_intervals"] = {
+                "learned": _plain_intervals(learned), "heuristic": _plain_intervals(baseline_rallies),
+            }
+            if motion is not None:
+                # Fixed thresholds, with the same temporal rules and padding.
+                # No audio, spread, serve, pose or retrieval evidence enters.
+                motion_config = _recording_settings(held_out.metadata)
+                motion_config.rally_threshold, motion_config.end_threshold = 0.55, 0.38
+                motion_config.retrieval_filter_enabled = False
+                motion_rallies = segment_rallies(held_out.timestamps, motion, motion_config,
+                                                video_duration=held_out.duration)
+                fold["motion_events"] = evaluate_intervals(motion_rallies, truth, held_out.duration, **match_options)
+                fold["predicted_intervals"]["motion"] = _plain_intervals(motion_rallies)
+                motion_events.append(fold["motion_events"])
             learned_events.append(fold["learned_events"])
             heuristic_events.append(fold["heuristic_events"])
         else:
@@ -194,11 +220,16 @@ def train_from_feedback(
         "heuristic_samples": _classification_metrics(heuristic_sample),
         "learned_events": _aggregate_events(learned_events),
         "heuristic_events": _aggregate_events(heuristic_events),
+        "motion_events": _aggregate_events(motion_events),
         "folds": folds,
         "warnings": warnings,
         "profile_path": str(destination.resolve()),
         "boundary_semantics": "Absolute error against reviewed export boundaries, including intended padding; not contact-time accuracy.",
         "thresholds": {"learned_start": 0.5, "learned_end": 0.35},
+        "matching": {"method": "boundary_tolerance" if boundary_tolerance_seconds is not None else "iou",
+                     "boundary_tolerance_seconds": boundary_tolerance_seconds, "minimum_iou": 0.3},
+        "motion_baseline": {"signal": "roi_motion, falling back to global motion", "start_threshold": 0.55,
+                            "end_threshold": 0.38, "temporal_rules": "Saved segmentation settings and padding; no cue filtering or label tuning."},
     }
     final_profile.update({
         "created_utc": datetime.now(timezone.utc).isoformat(),
@@ -214,17 +245,22 @@ def train_from_feedback(
 def evaluate_intervals(
     predicted: Sequence[Any], expected: Sequence[Any], duration_seconds: float,
     *, minimum_iou: float = 0.3,
+    boundary_tolerance_seconds: float | None = None,
 ) -> dict[str, Any]:
     """One-to-one event matching, false hits/hour, and export-boundary error.
 
     Matching maximizes the number of valid overlapping pairs, so a long clip
     spanning several true rallies can count as at most one detection.
+    When boundary_tolerance_seconds is supplied, both boundary errors must be
+    within that tolerance instead of using IoU. Median error pools the absolute
+    start and end errors of matched pairs only.
     """
     duration = float(duration_seconds)
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError("duration_seconds must be finite and positive")
     if not math.isfinite(minimum_iou) or not 0 < minimum_iou <= 1:
         raise ValueError("minimum_iou must be in (0, 1]")
+    _validate_boundary_tolerance(boundary_tolerance_seconds)
     detections = _intervals(predicted, duration)
     truth = _intervals(expected, duration)
     adjacency = []
@@ -234,7 +270,11 @@ def evaluate_intervals(
             intersection = max(0.0, min(end, right) - max(start, left))
             union = (end - start) + (right - left) - intersection
             iou = intersection / union
-            if iou >= minimum_iou:
+            if boundary_tolerance_seconds is not None:
+                start_error, end_error = abs(start - left), abs(end - right)
+                if max(start_error, end_error) <= boundary_tolerance_seconds + 1e-9:
+                    options.append((-(start_error + end_error), j))
+            elif iou >= minimum_iou:
                 options.append((iou, j))
         adjacency.append([j for _, j in sorted(options, reverse=True)])
     matched: dict[int, int] = {}
@@ -255,6 +295,7 @@ def evaluate_intervals(
         (abs(detections[i][0] - truth[j][0]), abs(detections[i][1] - truth[j][1]))
         for j, i in matched.items()
     ]
+    boundary_errors = [error for pair in errors for error in pair]
     tp = len(matched)
     fp, fn = len(detections) - tp, len(truth) - tp
     return {
@@ -265,8 +306,14 @@ def evaluate_intervals(
         "false_positives_per_hour": fp * 3600.0 / duration,
         "mean_start_error_seconds": float(np.mean([e[0] for e in errors])) if errors else None,
         "mean_end_error_seconds": float(np.mean([e[1] for e in errors])) if errors else None,
+        "median_boundary_error_seconds": float(np.median(boundary_errors)) if boundary_errors else None,
+        "boundary_errors_seconds": boundary_errors,
+        "matches": [{"predicted": {"start": detections[i][0], "end": detections[i][1]},
+                     "reference": {"start": truth[j][0], "end": truth[j][1]}}
+                    for j, i in sorted(matched.items())],
         "evaluated_duration_seconds": duration,
-        "matching_iou": minimum_iou,
+        "matching_iou": minimum_iou if boundary_tolerance_seconds is None else None,
+        "boundary_tolerance_seconds": boundary_tolerance_seconds,
     }
 
 
@@ -552,7 +599,19 @@ def _aggregate_events(metrics: list[dict[str, Any]]) -> dict[str, Any] | None:
               "evaluated_duration_seconds": duration, "recording_count": len(metrics)}
     for key in ("mean_start_error_seconds", "mean_end_error_seconds"):
         result[key] = sum(m[key] * m["true_positives"] for m in metrics if m[key] is not None) / tp if tp else None
+    errors = [value for metric in metrics for value in metric["boundary_errors_seconds"]]
+    result["median_boundary_error_seconds"] = float(np.median(errors)) if errors else None
     return result
+
+
+def _validate_boundary_tolerance(value: float | None) -> None:
+    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))
+                              or not math.isfinite(value) or value < 0):
+        raise ValueError("boundary_tolerance_seconds must be finite and non-negative")
+
+
+def _plain_intervals(items: Sequence[Any]) -> list[dict[str, float]]:
+    return [{"start": a, "end": b} for a, b in _intervals(items, None)]
 
 
 def _intervals(items: Sequence[Any], duration: float | None) -> list[tuple[float, float]]:

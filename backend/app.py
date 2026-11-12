@@ -174,10 +174,12 @@ def create_app(data_dir=None, service=None):
     from .jobs import install_job_routes
     from .labels import install_label_routes
     from .media import install_media_routes
-    install_job_routes(app, projects)
+    from .admin import install_admin_routes
+    jobs = install_job_routes(app, projects)
     install_media_routes(app, projects)
     install_label_routes(app, projects)
     install_phone_routes(app, projects, phone_token)
+    install_admin_routes(app, projects, jobs)
     return app
 
 

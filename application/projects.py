@@ -153,7 +153,9 @@ class ProjectService:
         state.setdefault("selected", 0 if state.get("rallies") else -1)
         state.setdefault("position", 0)
         state.setdefault("revision", 0)
-        state.setdefault("explanation", "")
+        # A receipt describes an action in this session, not a saved point.
+        # Its player names may be outdated after opening and reconciliation.
+        state["explanation"] = ""
         state.setdefault("highlight_queue", [])
         state.setdefault("export_settings", {})
         state.setdefault("complete", False)
@@ -240,6 +242,7 @@ class ProjectService:
         for key in ("signals", "analysis_settings", "analysis_roi", "analysis_court_context"):
             state[key] = None
         state.update(initial_predictions=[], rejected_detections=[], complete=False, complete_review_confirmed=False, highlight_queue=[])
+        state.pop("detection_run", None)
         state.setdefault("match_settings", {})["stats_complete"] = False
         state["rallies"] = [{**r, "reviewed": False, "point_stats": {}, "classification": {},
                               "winner": "", "outcome": "", "player": ""}
@@ -394,6 +397,10 @@ class ProjectService:
             else:
                 state = deepcopy(project.state)
                 affects_stats, history = self._apply(state, command)
+                if kind == "classify" and not affects_stats and not history:
+                    # Reconfirming the same outcome/log is a no-op, including
+                    # its receipt; do not create a revision just to clear it.
+                    return self.snapshot(project_id)
                 if affects_stats:
                     state["match_settings"]["stats_complete"] = False
                     state["complete"] = False
@@ -413,6 +420,8 @@ class ProjectService:
 
     def _apply(self, state, command):
         kind = command.get("type")
+        if kind not in {"position", "save_as"}:
+            state["explanation"] = ""
         affects_stats, history = False, True
         rallies = [Rally.from_dict(r) for r in state["rallies"]]
         identity = command.get("rally_id")
@@ -489,7 +498,7 @@ class ProjectService:
                                       and not rallies[i].classification and not rallies[i].winner
                                       and rallies[i].outcome != "Replay / no point"), index)
             state["position"] = rally.end_time
-            state["explanation"] = self._explanation(rallies, state["match_settings"], index)
+            state["explanation"] = f"Clip {index + 1} · " + self._explanation(rallies, state["match_settings"], index)
             if rally.point_stats and not point:
                 state["explanation"] += " Earlier touch details cleared; Undo restores them."
             affects_stats = True

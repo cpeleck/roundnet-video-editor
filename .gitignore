@@ -16,3 +16,7 @@ exports/
 node_modules/
 .pnpm-store/
 frontend/dist/
+
+# The buildless landing page keeps its source assets in dist.
+!sites/roundnet-landing/dist/
+!sites/roundnet-landing/dist/**

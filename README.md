@@ -339,7 +339,7 @@ with a small inset and shows the team score for each point, accounting for valid
 points omitted from the cut. Server and receiver appear in the editing interface
 for the selected clip throughout its review. At the clip's end, the editor shows
 the updated score and the next serving pair separately from that clip's pair;
-seeking back into a clip restores that point's starting state. Optional
+seeking back into a clip restores that point's starting state. The next pair appears only after an outcome is known. Result messages name the clip they describe and clear when you select another clip or reopen the project. Optional
 captions use the clip's player/outcome/note. A supplied PNG is placed at the lower
 right as branding. Exports include the current score, player statistics, and RPR end card by default.
 The export dialog previews that player card and lets
@@ -403,6 +403,22 @@ not activate it: inspect the report and choose **Use Profile**. Subsequent
 detection uses it; **Learning → Use Default Detector** restores default scoring.
 Incompatible feature sets or invalid profiles produce a warning and fall back
 to the default detector.
+
+### Browser admin benchmarks
+
+Open **Admin benchmarks** in the local Mac interface to save fully reviewed
+ground-truth snapshots from 8–10 recordings and run leave-one-recording-out
+evaluation. The comparison reports rally precision, recall, and pooled median
+boundary error for the held-out learned detector, existing heuristic, and a
+motion-only baseline. Both boundaries must match within ±1 second. Per-recording
+interval tracks and downloadable JSON make the results inspectable.
+
+New analyses also save detection wall time. Reports distinguish measured runs on
+24–26 minute recordings from scaled 25-minute estimates, and show median net
+manual interval corrections per recording. Older analyses have no timing.
+The local owner has admin access automatically; paired phone sessions remain
+editors. No benchmark accuracy is claimed until you supply reviewed recordings.
+See the [benchmark workflow and metric definitions](docs/benchmark.md).
 
 ## Comparing with an external manual edit
 
@@ -495,3 +511,15 @@ point and support RPR without inventing receive/set quality. See
 
 Frontend regression checks: `cd frontend && pnpm test`; production check:
 `pnpm build`. Backend checks: `.venv/bin/python -m pytest -q`.
+
+## License and clean exports
+
+Project-authored code is available under the [MIT License](LICENSE). The local
+editor is free to use with unlimited exports. Roundnet adds no required app
+logo, watermark, promotional intro/outro, or attribution screen to your video.
+Scoreboards, statistics, captions, and team or sponsor graphics are your choice.
+See [our export and branding commitments](docs/export-branding.md).
+
+The branded landing page lives in `sites/roundnet-landing/dist/`. It is a static
+site with no dependencies or build step; serve that directory with
+`python3 -m http.server 4173 --directory sites/roundnet-landing/dist` to preview it.

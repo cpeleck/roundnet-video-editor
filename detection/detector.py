@@ -8,6 +8,8 @@ import json
 from os import PathLike
 from pathlib import Path
 import sys
+import platform
+import time
 from typing import Any, Sequence
 
 import numpy as np
@@ -151,6 +153,7 @@ class RoundnetDetector:
         if not path.is_file():
             raise FileNotFoundError(f"video file does not exist: {path}")
         check_cancelled(cancel_callback)
+        started = time.perf_counter()
         court = normalize_court_context(court_context)
         report_progress(progress_callback, 0.0, "Starting rally detection")
 
@@ -250,6 +253,9 @@ class RoundnetDetector:
             retrieval_scores=motion.retrieval,
             pose_serve_scores=motion.pose_serve,
             metadata={"court_context": court, "player_backend": motion.player_backend,
+                      "detection_elapsed_seconds": time.perf_counter() - started,
+                      "machine": platform.machine(), "system": platform.system(),
+                      "python_version": platform.python_version(),
                       "player_tracks": list(motion.player_tracks),
                       "pose_notes": "Pose cues are observed joint motion, not a trained serve/action classifier."},
         )

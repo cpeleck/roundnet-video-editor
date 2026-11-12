@@ -146,6 +146,9 @@ def test_detection_process_commits_recoverable_analysis(recording, tmp_path):
         assert state["revision"] == before["revision"] + 1
         assert state["stage"] == "review"
         assert state["signals"]["timestamps"]
+        assert state["detection_run"]["detection_elapsed_seconds"] > 0
+        assert state["detection_run"]["duration_seconds"] == pytest.approx(2)
+        assert ProjectService(service.data_dir).get_state(identity)["detection_run"] == state["detection_run"]
         assert result["result"]["project"]["revision"] == state["revision"]
         service.command(identity, {"type": "undo"})
         assert service.get_state(identity)["rallies"] == before["rallies"]

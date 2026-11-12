@@ -43,7 +43,9 @@ def check_settings(changes, stored):
 def install_phone_routes(app, service, token):
     @app.get("/api/session")
     def session(request: Request):
-        return JSONResponse({"paired": not token or paired(request, token), "phone_enabled": bool(token)},
+        from .admin import is_admin
+        return JSONResponse({"paired": not token or paired(request, token), "phone_enabled": bool(token),
+                             "role": "admin" if is_admin(request) else "editor"},
                             headers={"Cache-Control": "no-store"})
 
     @app.post("/api/session")

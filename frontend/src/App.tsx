@@ -9,6 +9,7 @@ import { Modal } from './Modal';
 import { RecordingUpload } from './RecordingUpload';
 import { createCommandQueue } from './commandQueue';
 import { formatTimecode } from './timecode';
+import { Benchmark } from './Benchmark';
 
 export type Command = (type: string, values?: Record<string, unknown>) => Promise<Project | undefined>;
 export const timecode = (time: number) => formatTimecode(time);
@@ -21,7 +22,8 @@ export default function App() {
   const [project, setProject] = useState<Project | null>(null);
   const current = useRef<Project | null>(null);
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [screen, setScreen] = useState<'projects' | 'workspace' | 'new'>('projects');
+  const [screen, setScreen] = useState<'projects' | 'workspace' | 'new' | 'admin'>('projects');
+  const [admin, setAdmin] = useState(false);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -39,6 +41,7 @@ export default function App() {
     catch (e) { fail(e); } finally { setLoading(false); }
   }, [fail]);
   useEffect(() => { void refreshProjects(); }, [refreshProjects]);
+  useEffect(() => { void request<{ role: string }>('/session').then(session => setAdmin(session.role === 'admin')).catch(() => setAdmin(false)); }, []);
   useEffect(() => { window.scrollTo({ top: 0 }); }, [screen, project?.project_id, project?.stage]);
   const queue = useRef<ReturnType<typeof createCommandQueue<Project>> | null>(null);
   if (!queue.current) queue.current = createCommandQueue<Project>(async (type, values, projectId) => {
@@ -112,6 +115,7 @@ export default function App() {
       <button className="brand" disabled={busy || reviewDraftOpen} onClick={() => void home()} aria-label="Roundnet projects"><span className="brand-mark"><i/><i/><i/></span>roundnet<span className="brand-caption">RALLY EDITOR</span></button>
       {screen === 'workspace' && project ? <><span className="header-divider"/><div className="project-heading"><strong>{project.title}</strong><span className={`saved ${pending ? 'saving' : ''}`}><Icon name="check" size={13}/>{pending ? 'Saving…' : project.save_status === 'saved' ? 'All changes saved' : project.save_status}</span></div><div className="header-actions"><button className="icon-button" title="Undo (⌘Z)" disabled={busy || reviewDraftOpen || !project.can_undo} onClick={() => void command('undo')}><Icon name="undo"/></button><button className="icon-button" title="Redo (⇧⌘Z)" disabled={busy || reviewDraftOpen || !project.can_redo} onClick={() => void command('redo')}><Icon name="redo"/></button><span className="header-divider"/><button className="button subtle" disabled={busy || reviewDraftOpen} onClick={() => setStatsOpen(true)}><Icon name="stats"/>Statistics</button><button className="button primary small" disabled={busy || reviewDraftOpen || !project.match_settings.setup_complete} onClick={() => void command('stage', { stage: 'export' })}><Icon name="export"/>Export</button></div></> : <span className="local-badge"><span/>{phone ? 'CONNECTED TO YOUR MAC' : 'ON YOUR COMPUTER'}</span>}
     </header>
+    {admin && <nav className="admin-nav" aria-label="Admin tools"><span>LOCAL OWNER</span><button className="button subtle small" disabled={busy || reviewDraftOpen} onClick={() => { void refreshProjects(); setScreen('admin'); }}>Admin benchmarks</button></nav>}
     {error && <div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" onClick={() => setError('')} aria-label="Dismiss error"><Icon name="close"/></button></div>}
     {screen === 'projects' && <main className="dashboard">
       <div className="dashboard-title"><div><div className="eyebrow">YOUR WORKSPACE</div><h1>Good games deserve<br/><span>a great replay.</span></h1><p>From the first serve to the final point.<br/>Find your rallies, tell the story, keep the memories.</p></div><div className="court-art" aria-hidden="true"><div className="court-orbit"/><div className="court-net"/><i className="court-ball"/><span className="court-coordinate">40.0° N · GAME ON</span></div></div>
@@ -121,6 +125,7 @@ export default function App() {
       <footer className="dashboard-footer"><Icon name="video"/>{phone ? 'Your footage and edits stay on your Mac. Keep it running while you edit.' : 'Your footage stays here. No uploads, no account, just the game.'}<button onClick={() => void refreshProjects()}>Refresh matches</button></footer>
     </main>}
     {screen === 'new' && <Setup project={null} command={command} update={value => { update(value); setScreen('workspace'); }} onError={fail} onBack={() => void home()}/>}
+    {screen === 'admin' && admin && <Benchmark projects={projects} project={project} onBack={() => void home()} onOpen={id => { void open(id).then(async () => { if (current.current?.project_id === id) await command('stage', { stage: 'review' }); }); }}/>}
     {screen === 'workspace' && project && <>
       <nav className="workflow-nav" aria-label="Match workflow"><button className="workspace-back" disabled={busy || reviewDraftOpen} onClick={() => void home()}><Icon name="grid"/>Projects</button><div>{stages.map(([stage, title], index) => <button className={project.stage === stage ? 'active' : ''} key={stage} disabled={busy || reviewDraftOpen || stage !== 'setup' && !project.match_settings.setup_complete} onClick={() => void command('stage', { stage })}><span>{index + 1}</span>{title}{index < stages.length - 1 && <Icon name="chevron" size={14} style={{ transform: 'rotate(-90deg)' }}/>}</button>)}</div><button className="icon-button" title="Project settings" disabled={busy || reviewDraftOpen} onClick={() => void command('stage', { stage: 'setup' })}><Icon name="settings"/></button></nav>
       {(project.source_missing || project.source_changed) && <div className="warning-banner">{project.source_missing ? 'The recording has moved. Relink it to resume editing.' : 'The recording changed since this project was saved. Relink the original recording before editing.'}<button className="button small" onClick={() => void relink()}>Relink recording</button></div>}

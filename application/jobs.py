@@ -163,6 +163,12 @@ def _run_job(kind: str, payload: dict[str, Any], messages: Any, cancelled: Any) 
                 messages.put({"type": "cancelled"})
                 return
             data = result.to_dict(include_signals=True)
+        elif kind == "benchmark":
+            from training.benchmark import run_benchmark
+            data = run_benchmark(payload["paths"], payload["profile_path"],
+                boundary_tolerance_seconds=payload["boundary_tolerance_seconds"],
+                progress=lambda message: progress(0, message), cancelled=cancelled.is_set)
+            data["report_id"] = payload["report_id"]
         elif kind == "preview":
             from video.exporter import FFmpegExporter
             destination = Path(payload["output_path"])
@@ -246,6 +252,31 @@ class JobManager:
                 raise KeyError(identity)
             return deepcopy(self._jobs[identity])
 
+    def start_benchmark(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Use the same bounded, cancellable workers without changing a project."""
+        with self._lock:
+            if self._closed:
+                raise ValueError("The job manager is shutting down")
+            if any(job["kind"] == "benchmark" and job["status"] not in TERMINAL_STATUSES
+                   for job in self._jobs.values()):
+                raise ValueError("A benchmark is already running")
+            identity = uuid4().hex
+            self._jobs[identity] = {"id": identity, "project_id": None, "kind": "benchmark", "status": "queued",
+                "progress": 0, "message": "Waiting for a worker", "error": None, "result": None,
+                "created_at": datetime.now(timezone.utc).isoformat(), "finished_at": None}
+            control = {"cancelled": self.context.Event(), "process": None, "cancel_time": None}
+            thread = threading.Thread(target=self._monitor, args=(identity, deepcopy(payload)),
+                                      name=f"roundnet-benchmark-{identity[:8]}", daemon=True)
+            control["thread"] = thread
+            self._controls[identity] = control
+            thread.start()
+            return deepcopy(self._jobs[identity])
+
+    def active_benchmark(self) -> dict[str, Any] | None:
+        with self._lock:
+            return next((deepcopy(job) for job in self._jobs.values()
+                         if job["kind"] == "benchmark" and job["status"] not in TERMINAL_STATUSES), None)
+
     def cancel(self, identity: str) -> dict[str, Any]:
         with self._lock:
             if identity not in self._jobs:
@@ -261,7 +292,7 @@ class JobManager:
         # Serializing cancel with the commit means an accepted detection cancel
         # also wins when the finished worker result is already waiting in its queue.
         with self._lock:
-            if status == "succeeded" and self._jobs[identity]["kind"] == "detection" and self._controls[identity]["cancelled"].is_set():
+            if status == "succeeded" and self._jobs[identity]["kind"] in {"detection", "benchmark"} and self._controls[identity]["cancelled"].is_set():
                 status, result = "cancelled", None
             self._commit_finish(identity, status, result=result, error=error, payload=payload)
 
@@ -271,25 +302,34 @@ class JobManager:
         try:
             if status == "succeeded":
                 updates = None
+                if job["kind"] == "benchmark":
+                    import json
+                    from training.feedback import _atomic_write_text
+                    _atomic_write_text(Path(payload["report_path"]), json.dumps(result, indent=2, allow_nan=False) + "\n")
                 if job["kind"] == "detection":
+                    runtime = {key: result.get("metadata", {})[key] for key in (
+                        "detection_elapsed_seconds", "machine", "system", "python_version", "player_backend")
+                        if key in result.get("metadata", {})}
                     updates = {"rallies": result["rallies"], "initial_predictions": deepcopy(result["rallies"]),
                         "rejected_detections": [], "signals": result["signals"], "analysis_settings": payload["settings"],
                         "analysis_roi": payload["roi"], "analysis_court_context": payload["court_context"],
+                        "detection_run": {**runtime, "finished_utc": datetime.now(timezone.utc).isoformat(),
+                                          "duration_seconds": result["duration"]},
                         "settings": payload["settings"], "roi": payload["roi"], "court_context": payload["court_context"],
                         "stage": "review", "video_duration": result["duration"], "selected_rally_index": 0 if result["rallies"] else -1}
-                if job["kind"] != "preview":
+                if job["kind"] not in {"preview", "benchmark"}:
                     self.projects.finish_job(project_id, identity, updates)
                 if job["kind"] == "detection":
                     result["project"] = self.projects.snapshot(project_id)
-            elif job["kind"] != "preview":
+            elif job["kind"] not in {"preview", "benchmark"}:
                 self.projects.unlock_job(project_id, identity)
         except Exception as exc:
-            if job["kind"] != "preview":
+            if job["kind"] not in {"preview", "benchmark"}:
                 self.projects.unlock_job(project_id, identity)
             status, error = "failed", f"Could not save job result: {type(exc).__name__}: {exc}"
         with self._lock:
             job.update(status=status, error=error, result=result if status == "succeeded" else None,
-                message={"succeeded": {"detection": "Detection complete", "export": "Export complete", "preview": "Playback ready"}[job["kind"]], "failed": "Job failed", "cancelled": "Cancelled"}[status],
+                message={"succeeded": {"detection": "Detection complete", "export": "Export complete", "preview": "Playback ready", "benchmark": "Benchmark complete"}[job["kind"]], "failed": "Job failed", "cancelled": "Cancelled"}[status],
                 finished_at=datetime.now(timezone.utc).isoformat())
             if status == "succeeded":
                 job["progress"] = 100
